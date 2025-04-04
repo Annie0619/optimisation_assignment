@@ -1,0 +1,62 @@
+---
+title: "Mixed Integer Linear Programming"
+author: "Andomei Smit: SMTAND051"
+date: "25/02/2025"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    fig_caption: true
+    keep_tex: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+```
+
+```{r}
+library(readxl)
+```
+
+# Garden by numbers
+
+The aim of the project is to find the optimal cottage garden design. 
+
+Some intro about what a cottage garden is.
+
+Each of the techniques will be applied to solve some aspect of this optimization problem.
+
+Colours are from the RGB model.
+
+# Mixed Integer Linear Programming (MILP)
+
+## Overview
+
+## Formulation
+\newpage
+Let
+\begin{enumerate}
+\item $x_{is}$ be the number of plant $i$ of size $s$ that we purchase
+\item $c_{is}$ be the cost of plant $i$ of size $s$
+\item $I_{is}$ be the impact that plant $i$ has when it is of size $s$, $0<I_{is}<100$
+\item $Q_i$ be the quantity of plant $i$ that the optimal garden has from the SA and GA Algorithm
+\item $B$ be the total available budget
+\end{enumerate}
+We then define our objective as:
+$$
+\text{max} \sum_i\sum_s I_{is}x_{is}
+$$
+Subject to the following constraints:
+$$
+\sum_s x_{is}= Q_i\ \  \forall\  i
+$$
+
+$$
+\sum_i\sum_s c_{is}x_{is} \le B\ \ \ \forall\  i,s
+$$
+
+$$
+x_{is}\ge0\ \ \ \forall\  i,s
+$$
+where each $x_{is}$ is an integer.
