@@ -32,16 +32,15 @@ Colours are from the RGB model.
 # Simulated Annealing
 
 Generate the optimal solution in terms of:
-1. Colour
+1. Color
 2. Balance
 3. Symmetry
-4. Seasonal variate
+4. Seasonal variation
 
 Constraints:
 1. The height of the plants around the water feature needs to be at least 10cm shorter than the water feature
 2. Tall plants cannot hide short plants where the view point is from the center of the garden out to the walls
-3. There cannot be more than 25 unique types of plants
-4. There must be at least 15 unique types of plants
+3. The number of unique types of plants needs to be at least 15, but no more than 25
 
 ## Read in data
 
@@ -72,6 +71,7 @@ empty_grid
 
 ## Generate an initial solution
 
+### Fill all available spots with a random sample of plants
 ```{r}
 # start by just assigning random plants
 ## amount of available blocks:
@@ -81,42 +81,124 @@ open_blocks <- length(empty_grid[empty_grid!="U"])
 test_bunny <- empty_grid
 
 # sample with replacement from the plants:
+## note that the plants are indexed from 1:50
 set.seed(1)
 test_bunny[is.na(test_bunny)] <- sample(1:50, open_blocks, replace = TRUE)
 
-# see if it is a viable solution
-water_feature_visible <- function(candidate_grid){
-  # find the plant indexes in the block around the water feature
-  all_plants <- candidate_grid[5, 2:5] # the row above the water feature
-  all_plants <- c(all_plants, candidate_grid[8, 2:5]) # the row below the water feature
-  all_plants <- c(all_plants, candidate_grid[6:7, 2]) # the left side
-  all_plants <- c(all_plants, candidate_grid[6:7, 5]) # the right side
+test_bunny
+```
+
+### Make it a viable solution
+For the solution to be viable, all three conditions need to be met. We will check each of these iteratively.
+
+
+
+#### Step 1: Check number of unique plants
+The number of unique plants in the garden needs to be greater or equal to 15 and less than or equal to 25.
+
+If there are less than 15, for each amount below 15, sample (with replacement) at random 2 new plants from a list of plants not yet in the garden. For example, if there are only 13 unique plants, choose 4 new plants at random (with replacement) from the list of plants that are not yet in the garden.
+
+If there are more than 25, for each amount above 25, randomly choose an index from the plants already in the garden to replace. Randomly replace the plant with one of the remaining plants in the garden not in this list of indeces.
+
+For example, if there are 27 unique plants, we could choose plants with index 5 and 17 to replace. We would then randomly sample from one of the remaining 25 plants to replace these 2 plant indeces/ species.
+
+```{r}
+correct_amount_unique_plants <- function(candidate_grid){
+  # get number of unique plants (minus one for "U")
+  unique_plants <- length(unique(as.vector(candidate_grid))) - 1
   
-  # find the heights of these plants
-  heights <- plant_data$Maturity_Height[as.numeric(all_plants)]
+  # set condition to loop over
+  ## if 15 <= unique_plants <= 25, this will be TRUE, FALSE otherwise
+  correct_amount <- (unique_plants<=25 & unique_plants>=15)
   
-  # for all plants with heights >90, random sample from those with heights <=90:
-  all_plants[heights>90] <- sample(which(plant_data$Maturity_Height<=90),
-                                length(heights[heights>90]), replace = TRUE)
-  
-  # now put these back into the grid:
-  candidate_grid[5, 2:5] <- all_plants[1:4]
-  candidate_grid[8, 2:5] <- all_plants[5:8]
-  candidate_grid[6:7, 2] <- all_plants[9:10]
-  candidate_grid[6:7, 5] <- all_plants[11:12]
-  
+  # while we don't have the correct amount
+  while (!correct_amount) {
+    # if there are not enough unique plants:
+    if(unique_plants<15){
+      # select how many new unique plants
+      amount_new_plants <- 15 - unique_plants
+      # index of plants not yet in garden:
+      available_plants <- setdiff(c(1:50),        
+                                  unique(as.vector(candidate_grid)))
+      
+      # get most frequent plants
+      freq_table <- table(candidate_grid[candidate_grid != "U"])
+      sorted_freq <- sort(freq_table, decreasing = TRUE)
+      # replace some of the most frequent plants
+      most_frequent_to_replace <- names(sorted_freq)[1:amount_new_plants]
+      # store their frequencies
+      frequencies <- as.numeric(sorted_freq)[1:amount_new_plants]
+      
+      # replace those:
+      for(i in 1:amount_new_plants){
+        # get row/col indices of all occurrences of the plant
+        positions <- which(candidate_grid == most_frequent_to_replace[i],
+                           arr.ind = TRUE)
+        # choose two random positions to replace
+        chosen_positions <- positions[sample(1:nrow(positions), 2), ,
+                                      drop = FALSE]
+        # pick a new plant
+        new_plant <- sample(available_plants, 1)
+        # Replace in the matrix
+        candidate_grid[chosen_positions] <- new_plant
+
+      }
+      # update the number of unique plants:
+      unique_plants <- length(unique(as.vector(candidate_grid))) - 1
+      # update the condition:
+      correct_amount <- (unique_plants<=25 & unique_plants>=15)
+    }
+    # otherwise, if there are too many unique plants:
+    else if(unique_plants>25){
+      # find plants already in garden:
+      existing_plants <- unique(as.vector(
+        candidate_grid[candidate_grid!="U"]))
+      # how many to remove:
+      remove_amount <- unique_plants - 25
+      # randomly choose 'remove_amount' of plants to remove
+      plant_species_to_remove <- sample(existing_plants, 
+             remove_amount, replace = F) # without replacement
+      
+      # make list of plants that they can be replaced with:
+      replace_with <- setdiff(existing_plants,
+                              plant_species_to_remove)
+      
+      # iterate over all plants from these species and replace
+      # with plants from this list
+      for(i in 1:remove_amount){
+        # current plant we want to replace
+        cur_plant <- plant_species_to_remove[i]
+        # find all these plants and randomly replace with
+        # 'replace_with' plants
+        
+        amount_to_replace <- nrow(which(candidate_grid == cur_plant,
+                                        arr.ind = TRUE))
+        # replace them
+        candidate_grid[which(candidate_grid == cur_plant,
+                                        arr.ind = TRUE)] <-
+          sample(replace_with, 
+                 amount_to_replace, replace = TRUE) # sample from plants in this list
+      }
+      # update the number of unique plants:
+      unique_plants <- length(unique(as.vector(candidate_grid))) - 1
+      # update the condition:
+      correct_amount <- (unique_plants <=25 & unique_plants >=15)
+    }
+  }
   return(candidate_grid)
 }
 
+# test it:
 test_bunny # before changing
-water_feature_visible(test_bunny) # after changing
+length(unique(as.vector(test_bunny))) # has 37 unique elements, thus 36 unique plants
 
-test_bunny <- water_feature_visible(test_bunny)
-
-# we see index 7 changed to 36 (height 300 to 20), 9 to 34 (height 180 to 30), 21 to 31 (height 180 to 40) and 21 to 40 (height 180 to 10) to make the water feature visible
+test_bunny <- correct_amount_unique_plants(test_bunny)
+length(unique(as.vector(test_bunny))) # has 26 unique elements, thus 25 unique plants (after removing "U")
 ```
 
-### Function to check height restriction for all plants
+
+#### Step 2: Check height restriction for all plants
+This step will reorder the plants from shortest to tallest to ensure they are all visible.
 
 Assumptions: for all the sections above the lawn and seating area, we will only ensure that the plant heights increase from bottom to top. Call this the top section.
 
@@ -124,10 +206,6 @@ Divide the top section into 3 blocks:
 Block one is [1:2, 1:5]
 Block two is [1:3, 6:12]
 Block three is [1:2, 13:16]
-
-```{r}
-# function to fix heights given 
-```
 
 
 ```{r all_plants_visible}
@@ -168,6 +246,43 @@ matrix(as.numeric(test_bunny_heights), nrow = 2)
 which(matrix(as.numeric(test_bunny_heights), nrow = 2)[1,]<matrix(as.numeric(test_bunny_heights), nrow = 2)[2,])
 test_bunny
 ```
+
+#### Step 3: Check if the water feature is visible.
+
+```{r}
+# see if it is a viable solution
+water_feature_visible <- function(candidate_grid){
+  # find the plant indexes in the block around the water feature
+  all_plants <- candidate_grid[5, 2:5] # the row above the water feature
+  all_plants <- c(all_plants, candidate_grid[8, 2:5]) # the row below the water feature
+  all_plants <- c(all_plants, candidate_grid[6:7, 2]) # the left side
+  all_plants <- c(all_plants, candidate_grid[6:7, 5]) # the right side
+  
+  # find the heights of these plants
+  ## again this works because the plant numbers are their index
+  heights <- plant_data$Maturity_Height[as.numeric(all_plants)]
+  
+  # for all plants with heights >90, random sample from those with heights <=90:
+  all_plants[heights>90] <- sample(which(plant_data$Maturity_Height<=90),
+              length(heights[heights>90]), replace = TRUE)
+  
+  # now put these back into the grid:
+  candidate_grid[5, 2:5] <- all_plants[1:4]
+  candidate_grid[8, 2:5] <- all_plants[5:8]
+  candidate_grid[6:7, 2] <- all_plants[9:10]
+  candidate_grid[6:7, 5] <- all_plants[11:12]
+  
+  return(candidate_grid)
+}
+
+test_bunny # before changing
+
+test_bunny <- water_feature_visible(test_bunny)
+test_bunny # after changing
+
+# we see index 7 changed to 36 (height 300 to 20), 9 to 34 (height 180 to 30), 21 to 31 (height 180 to 40) and 21 to 40 (height 180 to 10) to make the water feature visible
+```
+
 
 ## Define a cost function
 
