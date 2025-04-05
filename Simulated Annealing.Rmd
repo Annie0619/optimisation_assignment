@@ -315,9 +315,166 @@ all_plants_visible <- function(candidate_grid){
 ```
 
 
-
-
 ## Define a cost function
+The cost function will take into account:
+1. Color
+2. Balance
+3. Symmetry
+4. Seasonal variation
+
+### Colour 
+
+We want mostly analogous colours (colours close to each other on the colour wheel), with a few complementary colours (colours on the oposite side of the colour wheel).
+
+Thus, give a high cost to discordant and low cost for analogous plants. This is done by looking at the "distance" or angle between colours. Analogous are those colours with a distance of <= 30, complementary is between 160 and 200, discordant will be the rest.
+
+Note that the cost can be negative, i.e. if the colours are only analogous or complementary then the cost is negative. This is done so that it decreases the cost (or rewards the optimisation) for having a good overall colour scheme.
+
+```{r}
+color_harmony_score <- function(candidate_grid) {
+  # extract plant IDs from the grid
+  plant_ids <- as.numeric(candidate_grid[candidate_grid!="U"])
+  
+  # get hues from plant_data
+  plant_hues <- plant_data$Flower_Colour_1_Hue[plant_ids]
+  
+  # filter out non-flowering (NA) plants
+  plant_hues <- plant_hues[!is.na(plant_hues)]
+  
+  # cast as numeric:
+  plant_hues <- as.numeric(plant_hues)
+  
+  # if fewer than 2 hues, no pairwise distances to evaluate
+  if (length(plant_hues) < 2) return(0)
+  
+  # circular hue distance function
+  hue_dist <- function(h1, h2) {
+    d <- abs(h1 - h2) # distance between the heus
+    pmin(d, 360 - d) # convert to circular for colors at top of color wheel (ex. 1 and 359)
+  }
+  
+  # get all pairwise distances
+  pairwise_dists <- combn(plant_hues, 2, function(x) hue_dist(x[1], x[2])) # take all 2-way combinations of the hue_dist functions
+  
+  # scoring: count analogous, complementary and discordant
+  analogous <- length(which(pairwise_dists <= 30))
+  complementary <- length(which(pairwise_dists >= 160 & pairwise_dists <= 200))
+  discordant <- length(which(pairwise_dists > 30 & pairwise_dists < 160 | pairwise_dists > 200))
+  
+  # total color harmony score
+  score <- 2 * analogous + 1 * complementary - discordant
+  
+  # scale the score by number of pairs of plants
+  n <- length(plant_hues)
+  n_pairs <- choose(n, 2)
+  
+  scaled_score <- score/ n_pairs
+  
+  return(scaled_score)
+}
+```
+
+### Symmetry
+
+Because the garden is quite small, we will see how well the garden is mirror around one vertical line down the middle of the garden. We will be looking at three elements:
+1. Color
+2. Height
+3. Plant category
+
+These will be equally balanced.
+
+Begin by defining a score for each of the three elements.
+
+```{r parts_symmetry_score}
+# color:
+color_similarity <- function(h1, h2) {
+  # if either are NA, return 0
+  if (is.na(h1) || is.na(h2)) return(0)
+  # otherwise, calculate the distance between their colours
+  d <- abs(h1 - h2)
+  # since the distance are circular, correct these:
+  circular_dist <- pmin(d, 360 - d)
+  # convert distance (0–180) to similarity (1 to 0)
+  return(1 - circular_dist / 180)
+}
+
+# height
+height_similarity <- function(h1, h2) {
+  # again, if either are NA, return 0
+  if (is.na(h1) || is.na(h2)) return(0)
+  # otherwise, return 1- (heigh difference)/(max height)
+  return(1 - abs(h1 - h2) / max(h1, h2))
+}
+
+# category- this will be binary TRUE/ FALSE if they are the same category
+category_similarity <- function(c1, c2) {
+  # again, if either is NA, return 0
+  if (is.na(c1) || is.na(c2)) return(0)
+  # otherwise, return 1 if same category, 0 otherwise
+  return(as.numeric(c1 == c2))
+}
+```
+
+Combine these into a symmetry score:
+```{r symmetry_score}
+symmetry_score <- function(candidate_grid) {
+  n_rows <- nrow(candidate_grid)
+  n_cols <- ncol(candidate_grid)
+  mid <- floor(n_cols / 2) # find middle point of grid
+  
+  total_score <- 0
+  count <- 0
+  
+  # for each row of the grid
+  for (i in 1:n_rows) {
+    # compare the left (j) and right (mirror_j) side 
+    for (j in 1:mid) {
+      mirror_j <- n_cols - j + 1 # find the mirrored block
+      
+      # find plant ids for both
+      left_id <- candidate_grid[i, j] 
+      right_id <- candidate_grid[i, mirror_j]
+      
+      # if both are plants and not "U":
+      if (left_id != "U" && right_id != "U") {
+        left_id <- as.numeric(left_id)
+        right_id <- as.numeric(right_id)
+        
+        # get all the data for these 2 plants:
+        left <- plant_data[left_id, ] 
+        right <- plant_data[right_id, ]
+        
+        # calculate the scores
+        ## colour
+        cs <- color_similarity(left$Flower_Colour_1_Hue,
+                               right$Flower_Colour_1_Hue)
+        ## height
+        hs <- height_similarity(left$Maturity_Height,
+                                right$Maturity_Height)
+        ## category
+        cats <- category_similarity(left$Category, right$Category)
+        
+        # score for these blocks: 
+        ## weighted average of similarities
+        score <- (cs + hs + cats) / 3 
+        
+        # add to total score
+        total_score <- total_score + score
+        # count the number of blocks compared
+        count <- count + 1
+      }
+    }
+  }
+  
+  # if all were "U":
+  if (count == 0) return(0)  # avoid division by zero
+  return(total_score / count)  # average similarity over mirrored pairs
+}
+
+symmetry_score(test_bunny)
+```
+
+### Balance
 
 ## Define perturbing function
 
