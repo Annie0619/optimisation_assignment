@@ -13,10 +13,120 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 rm(list=ls())
-```
-
-```{r}
 library(readxl)
 ```
 
+# Import required functions and data
+
+```{r}
+source("garden_utils.R")
+# read in data
+plant_data <- read_xlsx("Data/Plant data for Optimisation.xlsx")
+```
+
 # Genetic Algorithm
+
+A lot of the steps used in this algorithm is the same as for the Simulated Annealing Algorithm. To be specific, the steps for generating an initial solution, ensuring that it is a viable solution and calculating the overall aesthetic score. Thus, the outline for those steps will not be repeated here, but the same functions will be called (as stored in garden_utils.R)
+
+There are some changes, however, in that we need to now find a whole population of solutions that we can then apply a crossover, mutation and selection function to (which also needs to be defined).
+
+The steps are as follows:
+1. Generate an initial population of viable solutions
+2. Evaluate aesthetic score (i.e., fitness) for each individual
+3. Select parents based on fitness
+4. Apply crossover to parent pairs to create offspring
+5. Apply mutation to the offspring
+6. Check/repair viability of offspring
+7. Evaluate fitness of offspring
+8. Replace worst 20% of the population
+9. Repeat from step 3 until convergence or max generations reached
+
+## Step 1: Generate an initial population of viable solutions
+
+Begin with the standard empty grid.
+
+```{r empty_grid}
+# create our empty garden grid of 4 meters by 8 meters 
+## (i.e 8 blocks of 50cm by 16 blocks of 50cm)
+
+empty_grid <- matrix(NA, nrow = 8, ncol = 16)
+
+## for those blocks that are populated with either lawn, pathway, water feature or seating area, set this as a "U" to represent "unavailable"
+
+empty_grid[3:4, 1:5] <- "U" # garden gate and pathway
+empty_grid[6:7, 3:4] <- "U" # water feature
+empty_grid[4:8, 6:12] <- "U" # lawn and windows
+empty_grid[3:5, 13:14] <- "U" # seating area
+
+# visualise this
+empty_grid
+```
+
+Now define a function that will make a whole population of solutions using the functions generate_initial_solution and make_viable_solution from the garden_utils.R script.
+
+```{r generate_population}
+# function to combine two functions to make a VIABLE initial solution
+make_viable_initial_solution <- function(grid_template) {
+  # take the empty grid and fill it with random plants
+  random_grid <- generate_initial_sol(grid_template)
+  # return a viable solution
+  return(make_viable_solution(random_grid))
+}
+
+# function to generate a whole population of these solutions and store them in a list
+generate_population <- function(n, grid_template) {
+  lapply(seq_len(n), function(i) {
+    if (i %% 10 == 0) cat("Generated", i, "of", n, "\n")
+    make_viable_initial_solution(grid_template)
+  })
+}
+
+
+# now apply this function to make a population of 10 to test it
+test_pop_10 <- generate_population(10, empty_grid)
+```
+
+## Step 2: Evaluate aesthetic score (i.e., fitness) for each individual
+
+We simply need to apply our scoring function, total_aesthetic_score, to the population list of garden grids.
+
+```{r calc_aesthetic_score}
+# as example:
+lapply(test_pop_10, total_aesthetic_score)
+```
+
+## Step 3: Select parents based on fitness
+
+Since the fitness scores tend to vary initially, but become quite close later on, the parents will be selected based on a probability proportional to their rank of aesthetic scores.
+
+```{r select_parents}
+select_parents_by_rank <- function(fitness_list, n_parents, population_list) {
+  # ensure we have an even amount of parents
+  if(n_parents %% 2 != 0){
+    n_parents <- n_parents + 1
+  }
+  
+  fitness <- unlist(fitness_list)
+
+  # rank fitness: lowest gets rank 1, highest gets rank N
+  ranks <- rank(fitness, ties.method = "random") # if there are ties, randomly allocate the two tied ranks
+
+  # higher rank = higher selection probability
+  probs <- ranks / sum(ranks)
+
+  # sample parent indices with replacement using rank-based probabilities
+  parent_indeces <- sample(seq_along(fitness), size = n_parents, replace = TRUE, prob = probs)
+  
+  # get the parent garden grids from the population
+  parent_grids <- population_list[parent_indeces]
+  
+  return(parent_grids)
+}
+
+# as example:
+select_parents_by_rank(lapply(test_pop_10, total_aesthetic_score),
+                       4, # 4 parents
+                       test_pop_10) # our test population
+```
+
+## Step 4: Apply crossover to parent pairs to create offspring
