@@ -1,0 +1,22 @@
+---
+title: "Genetic Algorithm"
+author: "Andomei Smit: SMTAND051"
+date: "15/04/2025"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    fig_caption: true
+    keep_tex: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+```
+
+```{r}
+library(readxl)
+```
+
+# Genetic Algorithm
