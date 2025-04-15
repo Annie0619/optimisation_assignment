@@ -16,31 +16,24 @@ rm(list=ls())
 ```
 
 ```{r}
+# source all general input functions
+source("garden_utils.R")
 library(readxl)
 ```
-
-# Garden by numbers
-
-The aim of the project is to find the optimal cottage garden design. 
-
-Some intro about what a cottage garden is.
-
-Each of the techniques will be applied to solve some aspect of this optimization problem.
-
-Colours are from the RGB model.
 
 # Simulated Annealing
 
 Generate the optimal solution in terms of:
-1. Color
-2. Balance
-3. Symmetry
-4. Seasonal variation
+1. colour
+2. Balance and Symmetry
+3. Seasonal variation
 
 Constraints:
 1. The number of unique types of plants needs to be at least 15, but no more than 25
-1. The height of the plants around the water feature needs to be at least 10cm shorter than the water feature
-2. Tall plants cannot hide short plants where the view point is from the center of the garden out to the walls
+2. The height of the plants around the water feature needs to be at least 10cm shorter than the water feature
+3. Tall plants cannot hide short plants where the view point is from the center of the garden out to the walls
+
+Note that the majority of the functions used in this script are defined in the garden_utils.R file since they are repeated in the Genetic Algorithm as well.
 
 ## Read in data
 
@@ -72,19 +65,11 @@ empty_grid
 ## Generate an initial solution
 
 ### Fill all available spots with a random sample of plants
+
 ```{r random_initial_grid}
-# start by just assigning random plants
-## amount of available blocks:
-open_blocks <- length(empty_grid[empty_grid!="U"])
-
-# create empty grid:
-test_bunny <- empty_grid
-
-# sample with replacement from the plants:
-## note that the plants are indexed from 1:50
+# generate a test solution:
 set.seed(1)
-test_bunny[is.na(test_bunny)] <- sample(1:50, open_blocks, replace = TRUE)
-
+test_bunny <- generate_initial_sol(empty_grid)
 test_bunny
 ```
 
@@ -101,91 +86,6 @@ If there are more than 25, for each amount above 25, randomly choose an index fr
 For example, if there are 27 unique plants, we could choose plants with index 5 and 17 to replace. We would then randomly sample from one of the remaining 25 plants to replace these 2 plant indeces/ species.
 
 ```{r unique_plants}
-correct_amount_unique_plants <- function(candidate_grid){
-  # get number of unique plants (minus one for "U")
-  unique_plants <- length(unique(as.vector(candidate_grid))) - 1
-  
-  # set condition to loop over
-  ## if 15 <= unique_plants <= 25, this will be TRUE, FALSE otherwise
-  correct_amount <- (unique_plants<=25 & unique_plants>=15)
-  
-  # while we don't have the correct amount
-  while (!correct_amount) {
-    # if there are not enough unique plants:
-    if(unique_plants<15){
-      # select how many new unique plants
-      amount_new_plants <- 15 - unique_plants
-      # index of plants not yet in garden:
-      available_plants <- setdiff(c(1:50),        
-                                  unique(as.vector(candidate_grid)))
-      
-      # get most frequent plants
-      freq_table <- table(candidate_grid[candidate_grid != "U"])
-      sorted_freq <- sort(freq_table, decreasing = TRUE)
-      # replace some of the most frequent plants
-      most_frequent_to_replace <- names(sorted_freq)[1:amount_new_plants]
-      # store their frequencies
-      frequencies <- as.numeric(sorted_freq)[1:amount_new_plants]
-      
-      # replace those:
-      for(i in 1:amount_new_plants){
-        # get row/col indices of all occurrences of the plant
-        positions <- which(candidate_grid == most_frequent_to_replace[i],
-                           arr.ind = TRUE)
-        # choose two random positions to replace
-        chosen_positions <- positions[sample(1:nrow(positions), 2), ,
-                                      drop = FALSE]
-        # pick a new plant
-        new_plant <- sample(available_plants, 1)
-        # Replace in the matrix
-        candidate_grid[chosen_positions] <- new_plant
-
-      }
-      # update the number of unique plants:
-      unique_plants <- length(unique(as.vector(candidate_grid))) - 1
-      # update the condition:
-      correct_amount <- (unique_plants<=25 & unique_plants>=15)
-    }
-    # otherwise, if there are too many unique plants:
-    else if(unique_plants>25){
-      # find plants already in garden:
-      existing_plants <- unique(as.vector(
-        candidate_grid[candidate_grid!="U"]))
-      # how many to remove:
-      remove_amount <- unique_plants - 25
-      # randomly choose 'remove_amount' of plants to remove
-      plant_species_to_remove <- sample(existing_plants, 
-             remove_amount, replace = F) # without replacement
-      
-      # make list of plants that they can be replaced with:
-      replace_with <- setdiff(existing_plants,
-                              plant_species_to_remove)
-      
-      # iterate over all plants from these species and replace
-      # with plants from this list
-      for(i in 1:remove_amount){
-        # current plant we want to replace
-        cur_plant <- plant_species_to_remove[i]
-        # find all these plants and randomly replace with
-        # 'replace_with' plants
-        
-        amount_to_replace <- nrow(which(candidate_grid == cur_plant,
-                                        arr.ind = TRUE))
-        # replace them
-        candidate_grid[which(candidate_grid == cur_plant,
-                                        arr.ind = TRUE)] <-
-          sample(replace_with, 
-                 amount_to_replace, replace = TRUE) # sample from plants in this list
-      }
-      # update the number of unique plants:
-      unique_plants <- length(unique(as.vector(candidate_grid))) - 1
-      # update the condition:
-      correct_amount <- (unique_plants <=25 & unique_plants >=15)
-    }
-  }
-  return(candidate_grid)
-}
-
 # test it:
 test_bunny # before changing
 length(unique(as.vector(test_bunny))) # has 37 unique elements, thus 36 unique plants
@@ -199,30 +99,6 @@ length(unique(as.vector(test_bunny))) # has 26 unique elements, thus 25 unique p
 We will assume that the water feature is 100cm high and that all plants around it must be 90cm or shorter. If any plants in the blocks directly surrounding the water feature are >90cm, they will randomly be replaced with plants that are <90cm.
 
 ```{r water_feature_visible}
-water_feature_visible <- function(candidate_grid){
-  # find the plant indexes in the block around the water feature
-  all_plants <- candidate_grid[5, 2:5] # the row above the water feature
-  all_plants <- c(all_plants, candidate_grid[8, 2:5]) # the row below the water feature
-  all_plants <- c(all_plants, candidate_grid[6:7, 2]) # the left side
-  all_plants <- c(all_plants, candidate_grid[6:7, 5]) # the right side
-  
-  # find the heights of these plants
-  ## again this works because the plant numbers are their index
-  heights <- plant_data$Maturity_Height[as.numeric(all_plants)]
-  
-  # for all plants with heights >90, random sample from those with heights <=90:
-  all_plants[heights>90] <- sample(which(plant_data$Maturity_Height<=90),
-              length(heights[heights>90]), replace = TRUE)
-  
-  # now put these back into the grid:
-  candidate_grid[5, 2:5] <- all_plants[1:4]
-  candidate_grid[8, 2:5] <- all_plants[5:8]
-  candidate_grid[6:7, 2] <- all_plants[9:10]
-  candidate_grid[6:7, 5] <- all_plants[11:12]
-  
-  return(candidate_grid)
-}
-
 test_bunny # before changing
 
 test_bunny <- water_feature_visible(test_bunny)
@@ -251,76 +127,24 @@ Block two is [3:5, 17:16]- call this R_b2
 
 Divide the left section into 3 blocks:
 Block one is [5, 1:5]- call this L_b1
-Block two is [6:7, 1:2]- call this L_b2
+Block two is [6:7, c(1,2,5)]- call this L_b2
 Block three is [8, 1:5]- call this L_b3
 
-```{r sort_cols}
-# function that will sort the plants in a vector by height
-sort_plants <- function(plant_vector, sort_decreasing = T){
-  # convert to numeric
-  plant_vector <- as.numeric(plant_vector)
-  # get plant heights
-  heights <- plant_data$Maturity_Height[plant_vector]
-  # order from shortest to tallest
-  plant_vector <- plant_vector[order(heights, decreasing = sort_decreasing)]
-  return(plant_vector)
-}
-```
+In order to ensure this constraint is met, two functions are defined in garden_utils.R: 
+1. sort_plants (sorts a vector of plants by height)
+2. all_plants_visible (applies sort_plants over the garden_grid)
 
-Function that will apply this function over all these sub-blocks:
+#### Step 4: Combine these into a single function that will make a viable solution
 
-```{r all_plants_visible}
-all_plants_visible <- function(candidate_grid){
-  
-  # apply function to each section
-  # top: apply to the columns of this section
-  T_b1 <- apply(candidate_grid[1:2, 1:5], 2, sort_plants)
-  T_b2 <- apply(candidate_grid[1:3, 6:12], 2,
-                sort_plants)
-  T_b3 <- apply(candidate_grid[1:2, 13:16], 2,
-                sort_plants)
-  
-  # right: apply to the rows of this section
-  # for right section, flip direction of sorting
-  R_b1 <- t(apply(candidate_grid[6:8, 13:16], 1,
-                  sort_plants, sort_decreasing = FALSE))
-  R_b2 <- t(apply(candidate_grid[3:5, 15:16], 1,
-                  sort_plants, sort_decreasing = FALSE))
-  
-  # left: apply to the rows of these sections
-  L_b1 <- matrix(sort_plants(candidate_grid[5, 1:5]),
-                 nrow = 1)
-  L_b2 <- t(apply(candidate_grid[6:7, 1:2], 1,
-                  sort_plants))
-  L_b3 <- matrix(sort_plants(candidate_grid[8, 1:5]),
-                 nrow = 1)
-  
-  # put these back:
-  # top section:
-  candidate_grid[1:2, 1:5] <- T_b1
-  candidate_grid[1:3, 6:12] <- T_b2
-  candidate_grid[1:2, 13:16] <- T_b3
-  
-  # right section:
-  candidate_grid[6:8, 13:16] <- R_b1
-  candidate_grid[3:5, 15:16] <- R_b2
-  
-  # left section:
-  candidate_grid[5, 1:5] <- L_b1
-  candidate_grid[6:7, 1:2] <- L_b2
-  candidate_grid[8, 1:5] <- L_b3
-  
- return(candidate_grid)
-}
-```
-
+The function make_viable_solution in garden_utils.R combines all these constraint functions into a single function to ensure a candidate solution is viable and fixes it if it is not.
 
 ## Define a cost function
+All the following functions are in garden_utils.R.
+
 The cost function will take into account:
-1. Color
-2. Balance
-3. Symmetry
-4. Seasonal variation
+1. colour (in the function colour_harmony_score)
+2. Balance and Symmetry (in the function symmetry_score)
+3. Seasonal variation (in the function seasonal_variation_score)
 
 ### Colour 
 
@@ -330,154 +154,124 @@ Thus, give a high cost to discordant and low cost for analogous plants. This is 
 
 Note that the cost can be negative, i.e. if the colours are only analogous or complementary then the cost is negative. This is done so that it decreases the cost (or rewards the optimisation) for having a good overall colour scheme.
 
-```{r}
-color_harmony_score <- function(candidate_grid) {
-  # extract plant IDs from the grid
-  plant_ids <- as.numeric(candidate_grid[candidate_grid!="U"])
-  
-  # get hues from plant_data
-  plant_hues <- plant_data$Flower_Colour_1_Hue[plant_ids]
-  
-  # filter out non-flowering (NA) plants
-  plant_hues <- plant_hues[!is.na(plant_hues)]
-  
-  # cast as numeric:
-  plant_hues <- as.numeric(plant_hues)
-  
-  # if fewer than 2 hues, no pairwise distances to evaluate
-  if (length(plant_hues) < 2) return(0)
-  
-  # circular hue distance function
-  hue_dist <- function(h1, h2) {
-    d <- abs(h1 - h2) # distance between the heus
-    pmin(d, 360 - d) # convert to circular for colors at top of color wheel (ex. 1 and 359)
-  }
-  
-  # get all pairwise distances
-  pairwise_dists <- combn(plant_hues, 2, function(x) hue_dist(x[1], x[2])) # take all 2-way combinations of the hue_dist functions
-  
-  # scoring: count analogous, complementary and discordant
-  analogous <- length(which(pairwise_dists <= 30))
-  complementary <- length(which(pairwise_dists >= 160 & pairwise_dists <= 200))
-  discordant <- length(which(pairwise_dists > 30 & pairwise_dists < 160 | pairwise_dists > 200))
-  
-  # total color harmony score
-  score <- 2 * analogous + 1 * complementary - discordant
-  
-  # scale the score by number of pairs of plants
-  n <- length(plant_hues)
-  n_pairs <- choose(n, 2)
-  
-  scaled_score <- score/ n_pairs
-  
-  return(scaled_score)
-}
-```
+### Symmetry and Balance
 
-### Symmetry
-
-Because the garden is quite small, we will see how well the garden is mirror around one vertical line down the middle of the garden. We will be looking at three elements:
-1. Color
-2. Height
-3. Plant category
+Because the garden is quite small, we will see how well the garden is mirrored around one vertical line down the middle of the garden. We will be looking at three elements:
+1. colour (in the function colour_similarity)
+2. Height (in the function height_similarity)
+3. Plant category (in the function category_similarity)
 
 These will be equally balanced.
 
-Begin by defining a score for each of the three elements.
-
-```{r parts_symmetry_score}
-# color:
-color_similarity <- function(h1, h2) {
-  # if either are NA, return 0
-  if (is.na(h1) || is.na(h2)) return(0)
-  # otherwise, calculate the distance between their colours
-  d <- abs(h1 - h2)
-  # since the distance are circular, correct these:
-  circular_dist <- pmin(d, 360 - d)
-  # convert distance (0–180) to similarity (1 to 0)
-  return(1 - circular_dist / 180)
-}
-
-# height
-height_similarity <- function(h1, h2) {
-  # again, if either are NA, return 0
-  if (is.na(h1) || is.na(h2)) return(0)
-  # otherwise, return 1- (heigh difference)/(max height)
-  return(1 - abs(h1 - h2) / max(h1, h2))
-}
-
-# category- this will be binary TRUE/ FALSE if they are the same category
-category_similarity <- function(c1, c2) {
-  # again, if either is NA, return 0
-  if (is.na(c1) || is.na(c2)) return(0)
-  # otherwise, return 1 if same category, 0 otherwise
-  return(as.numeric(c1 == c2))
-}
-```
-
-Combine these into a symmetry score:
 ```{r symmetry_score}
-symmetry_score <- function(candidate_grid) {
-  n_rows <- nrow(candidate_grid)
-  n_cols <- ncol(candidate_grid)
-  mid <- floor(n_cols / 2) # find middle point of grid
-  
-  total_score <- 0
-  count <- 0
-  
-  # for each row of the grid
-  for (i in 1:n_rows) {
-    # compare the left (j) and right (mirror_j) side 
-    for (j in 1:mid) {
-      mirror_j <- n_cols - j + 1 # find the mirrored block
-      
-      # find plant ids for both
-      left_id <- candidate_grid[i, j] 
-      right_id <- candidate_grid[i, mirror_j]
-      
-      # if both are plants and not "U":
-      if (left_id != "U" && right_id != "U") {
-        left_id <- as.numeric(left_id)
-        right_id <- as.numeric(right_id)
-        
-        # get all the data for these 2 plants:
-        left <- plant_data[left_id, ] 
-        right <- plant_data[right_id, ]
-        
-        # calculate the scores
-        ## colour
-        cs <- color_similarity(left$Flower_Colour_1_Hue,
-                               right$Flower_Colour_1_Hue)
-        ## height
-        hs <- height_similarity(left$Maturity_Height,
-                                right$Maturity_Height)
-        ## category
-        cats <- category_similarity(left$Category, right$Category)
-        
-        # score for these blocks: 
-        ## weighted average of similarities
-        score <- (cs + hs + cats) / 3 
-        
-        # add to total score
-        total_score <- total_score + score
-        # count the number of blocks compared
-        count <- count + 1
-      }
-    }
-  }
-  
-  # if all were "U":
-  if (count == 0) return(0)  # avoid division by zero
-  return(total_score / count)  # average similarity over mirrored pairs
-}
-
+# test the overall symmetry score 
 symmetry_score(test_bunny)
 ```
 
-### Balance
+### Seasonal Variation
+
+Here we want to ensure that there are flowering plants year-round, but also award a small score for foliage year-round for non-flowering plants. We will do this by calculating the standard deviation of the number of flowering plants per month in the garden. A low SD means that the plants are flowering year-round and vice versa.
+
+We will also increase the score a bit for non-flowering plants.
+
 
 ## Define perturbing function
+All that this function will do is:
+1. Randomly choose between 5 to 10 plants to change in the current grid design
+2. Randomly choose new plants to replace these plants
+3. Make sure the solution is viable
 
-## Set temperature and cooling factor
+```{r perturbing}
+perturbing <- function(candidate_grid){
+  # how many to change
+  amount <- sample(5:10, 1)
+  # randomly choose which plants to change
+  ## index of all plants (i.e col and row index)
+  plants <- which(candidate_grid!="U", arr.ind = TRUE)
+  ## select which to change
+  change_these <- plants[sample(1:nrow(plants), amount, replace = F),]
+  ## randomly choose new plants
+  new_plants <- sample(1:50, amount, replace = T)
+  ## replace these:
+  candidate_grid[change_these] <- new_plants
+  
+  # make sure the solution is viable
+  candidate_grid <- make_viable_solution(candidate_grid)
+  return(candidate_grid)
+}
+```
+
+The starting temperature is a measure of how likely the algorithm is to choose a worse solution. We want to set it high enough initially so that it is able to get out of local optima.
+
+Note that in this case we are trying to maximise the aesthetic score of the garden.
 
 ## Iterate the process
+
+```{r}
+simulated_annealing <- function(initial_grid,
+  iterations = 1000,
+  start_temp = 1, # set starting temperature
+  cooling_rate = 0.995 # set cooling rate
+  ) { 
+  # Make the initial solution viable
+  current_grid <- make_viable_solution(initial_grid)
+  current_score <- total_aesthetic_score(current_grid)
+  
+  # Best seen so far
+  best_grid <- current_grid
+  best_score <- current_score
+  
+  # Record history
+  score_history <- numeric(iterations)
+  temp_history <- numeric(iterations)
+  
+  for (i in 1:iterations) {
+    cat("Calculation iteration", i, "of", iterations, "\n")
+    # Update temperature
+    temp <- start_temp * cooling_rate^i
+    temp_history[i] <- temp
+    
+    # Generate neighbor
+    new_grid <- make_viable_solution(perturbing(current_grid))
+    new_score <- total_aesthetic_score(new_grid)
+    
+    # calculate acceptance probability (maximization version)
+    accept_prob <- exp((new_score - current_score) / temp)
+    
+    # Accept if better, or with some probability if worse
+    if (new_score > current_score || runif(1) < accept_prob) {
+      current_grid <- new_grid
+      current_score <- new_score
+    }
+    
+    # Track the best
+    if (current_score > best_score) {
+      best_grid <- current_grid
+      best_score <- current_score
+    }
+    
+    # Save current score
+    score_history[i] <- current_score
+  }
+  
+  return(list(
+    best_grid = best_grid,
+    best_score = best_score,
+    score_history = score_history,
+    temp_history = temp_history
+  ))
+}
+```
+
+# Apply the function
+
+```{r}
+# generate initial solution
+set.seed(1)
+random_initial_grid <- generate_initial_sol(empty_grid)
+final_results <- simulated_annealing(random_initial_grid)
+
+final_results$best_score
+plot(final_results$score_history, type = "l")
+```
+
