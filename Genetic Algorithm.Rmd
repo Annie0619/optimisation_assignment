@@ -37,8 +37,7 @@ The steps are as follows:
 4. Apply crossover to parent pairs to create offspring
 5. Apply mutation to the offspring
 6. Check/repair viability of offspring
-7. Evaluate fitness of offspring
-8. Replace worst 20% of the population
+7. Replace worst 20% of the population with the new offspring
 9. Repeat from step 3 until convergence or max generations reached
 
 ## Step 1: Generate an initial population of viable solutions
@@ -97,17 +96,20 @@ lapply(test_pop_10, total_aesthetic_score)
 
 ## Step 3: Select parents based on fitness
 
-Since the fitness scores tend to vary initially, but become quite close later on, the parents will be selected based on a probability proportional to their rank of aesthetic scores.
+Since the fitness scores tend to vary initially, but become quite close later on, the parents will be selected based on a probability proportional to their rank of aesthetic scores. The function will specify a proportion of the population that will become the parents of the next generation
 
 ```{r select_parents}
-select_parents_by_rank <- function(fitness_list, n_parents, population_list) {
-  # ensure we have an even amount of parents
-  if(n_parents %% 2 != 0){
-    n_parents <- n_parents + 1
-  }
+select_parents_by_rank <- function(population_list, fitness_list, prop_parents = 0.4) {
   
+  # convert list to vector
   fitness <- unlist(fitness_list)
-
+  
+  # convert proportion of parents to number of parents
+  n_parents <- prop_parents*length(fitness)
+  
+  # ensure number of parents is even
+  if (n_parents %% 2 != 0) stop("Number of parents must be even.")
+  
   # rank fitness: lowest gets rank 1, highest gets rank N
   ranks <- rank(fitness, ties.method = "random") # if there are ties, randomly allocate the two tied ranks
 
@@ -124,9 +126,294 @@ select_parents_by_rank <- function(fitness_list, n_parents, population_list) {
 }
 
 # as example:
-select_parents_by_rank(lapply(test_pop_10, total_aesthetic_score),
-                       4, # 4 parents
-                       test_pop_10) # our test population
+test_parents_4 <- select_parents_by_rank(test_pop_10, # population,
+  lapply(test_pop_10, total_aesthetic_score)) # fitness
 ```
 
 ## Step 4: Apply crossover to parent pairs to create offspring
+
+We will be applying a probability based patch crossover. The whole grid will be divided into 2x2 patches. For each patch, which parent's patch is chosen for the offspring's patch will be done probabilistically from their relative aesthetic scores. The idea is that the stronger parent will have a larger probability of passing a patch on to the offspring. Note that for each parent pair, two offspring will be generated to maintain the size of the population.
+
+### Define function to do crossover on a pair of parents
+
+Start by defining a function that can do the crossover given a pair of parents and their fitness.
+
+```{r cross_over_function}
+# a function that takes in 2 parent pairs and returns the 2 resulting offspring
+patch_crossover <- function(parent1, parent2, fitness1, fitness2) {
+  grid_dims <- dim(parent1)
+  n_rows <- grid_dims[1]
+  n_cols <- grid_dims[2]
+  
+  # initialize two children
+  child1 <- matrix(NA, nrow = n_rows, ncol = n_cols)  # create same shape, empty
+  child2 <- matrix(NA, nrow = n_rows, ncol = n_cols)  # create same shape, empty
+  
+  # Normalize fitness to get probability for parent1
+  total_fitness <- fitness1 + fitness2
+  prob_parent1 <- fitness1 / total_fitness
+  
+  # for child1: loop through 2x2 patches
+  for (i in seq(1, n_rows, by = 2)) {
+    for (j in seq(1, n_cols, by = 2)) {
+      # Determine patch bounds (handle edge cases)
+      row_end <- min(i + 1, n_rows)
+      col_end <- min(j + 1, n_cols)
+      
+      # Choose parent for this patch
+      if (runif(1) < prob_parent1) {
+        child1[i:row_end, j:col_end] <- parent1[i:row_end, j:col_end]
+      } else {
+        child1[i:row_end, j:col_end] <- parent2[i:row_end, j:col_end]
+      }
+    }
+  }
+  
+  # and repeat for child2
+  for (i in seq(1, n_rows, by = 2)) {
+    for (j in seq(1, n_cols, by = 2)) {
+      # Determine patch bounds (handle edge cases)
+      row_end <- min(i + 1, n_rows)
+      col_end <- min(j + 1, n_cols)
+      
+      # Choose parent for this patch
+      if (runif(1) < prob_parent1) {
+        child2[i:row_end, j:col_end] <- parent1[i:row_end, j:col_end]
+      } else {
+        child2[i:row_end, j:col_end] <- parent2[i:row_end, j:col_end]
+      }
+    }
+  }
+  
+  return(list(child1, child2))
+}
+```
+
+### Define function to apply crossover to all parents
+
+Then, we define a function that will apply this function over the whole list of parents.
+
+```{r generate_all_offspring}
+generate_offspring <- function(parent_grids, fitness_vec) {
+  n_parents <- length(parent_grids)
+  
+  # Split parents and fitnesses into pairs
+  parent_pairs <- split(parent_grids, ceiling(seq_along(parent_grids) / 2))
+  fitness_pairs <- split(unlist(fitness_vec), ceiling(seq_along(fitness_vec) / 2))
+  
+  # apply patch crossover to each pair and flatten result
+  offspring_list <- lapply(seq_along(parent_pairs), function(i) {
+    parents <- parent_pairs[[i]]
+    fit <- fitness_pairs[[i]]
+    patch_crossover(parents[[1]], parents[[2]], fit[1], fit[2])
+  })
+  
+  # Flatten the list of lists (each pair gives 2 children)
+  offspring <- do.call(c, offspring_list)
+  return(offspring)
+}
+
+# get the fitness of the parents
+test_fitness_4 <- lapply(test_parents_4, total_aesthetic_score)
+# generate test offspring
+test_offspring_4 <- generate_offspring(test_parents_4, test_fitness_4)
+```
+
+
+## Step 5: Apply mutation to the offspring
+
+In order to do the mutation we will do the following:
+1. Randomly choose k 2x2 blocks to mutate (where 1<=k<=3)
+2. Randomly choose which k 2x2 blocks to mutate (which can be any 2x2 block over the whole grid, i.e. the blocks overlap by one plant as you move along the rows or columns)
+3. Randomly replace the plants in these blocks with new plants (if the block is not marked with "U"- i.e. is a garden path or lawn or other feature)
+
+```{r mutate_grid}
+mutate_grid <- function(grid, mutation_rate = 0.1, max_blocks = 3) {
+  if (runif(1) > mutation_rate) {
+    return(grid)  # no mutation
+  }
+  # generate index of plants:
+  plant_pool <- 1:nrow(plant_data)
+  
+  n_rows <- nrow(grid)
+  n_cols <- ncol(grid)
+  
+  # generate all possible 2x2 top-left corners
+  possible_blocks <- expand.grid(
+    i = seq(1, n_rows - 1, by = 2),
+    j = seq(1, n_cols - 1, by = 2)
+  )
+  
+  # Shuffle and choose up to max_blocks randomly
+  n_blocks <- sample(0:max_blocks, 1) # how many blocks will be mutated
+  selected_blocks <- possible_blocks[sample(nrow(possible_blocks), n_blocks), , drop = FALSE] # which blocks will be mutated
+  
+  for (k in seq_len(nrow(selected_blocks))) { # for each block
+    i <- selected_blocks$i[k] # find the top row
+    j <- selected_blocks$j[k] # find the top column
+    
+    for (r in i:(i + 1)) { # for the 2 rows
+      for (c in j:(j + 1)) { # for the 2 columns
+        # only mutate non-"U" cells
+        if (grid[r, c] != "U") { 
+          grid[r, c] <- sample(plant_pool, 1) # randomly sample a new plant
+        }
+      }
+    }
+  }
+  
+  return(grid)
+}
+
+# apply this function as an example:
+test_mutated_offspring_4 <- lapply(test_offspring_4, mutate_grid)
+```
+
+## Step 6: Check/repair viability of offspring
+
+We already have the function to do this, namely make_viable_solution. We will simply apply it to the list of offspring later on.
+
+
+## Step 7: Replace the worst of the population with the new offspring
+
+Replace the same proportion of the population that was chosen as parents with the new offspring.
+
+```{r replace_offspring}
+replace_offspring <- function(population_list, offspring_list){
+    
+  # 1. Compute fitness scores
+  fitness <- unlist(lapply(population_list, total_aesthetic_score))
+  
+  # 2. Get indices of worst-performing individuals
+  num_to_replace <- length(offspring_list)
+  worst_indices <- order(fitness)[1:num_to_replace]
+  
+  # 3. Replace them with offspring (assuming offspring_list is the same length as num_to_replace)
+  population_list[worst_indices] <- offspring_list[1:num_to_replace]
+  
+  return(population_list)
+}
+
+# example:
+new_test_pop <- replace_offspring(test_pop_10, test_offspring_4)
+```
+
+## Step 8: Repeat until convergence
+
+We will now write a sequence of functions that will repeat until convergence. Convergence will be defined as:
+1. Reaching a max number of generations OR
+2. No improvement greater than a small epsilon (0.1) for at least 5 generations OR
+3. The population has more than 90% duplicate individuals
+
+Tried values for improvement_threshold: 0.1, 0.05 (converged at 35 generations), 0.02 (converged at 47 generations with a max fitness of 2.96).
+
+```{r convergence_criteria}
+max_generations <- 100
+no_improvement_limit <- 5
+improvement_threshold <- 0.1
+diversity_threshold <- 0.90  # e.g. 90% of individuals are identical
+
+best_fitness_history <- c()
+mean_fitness_history <- c()
+generation_counter <- 0
+no_improvement_counter <- 0
+criteria_met <- FALSE
+
+# initialise a population of solutions
+current_pop <- generate_population(100, empty_grid)
+
+while(!criteria_met){ 
+  
+  # Step 1: check if generation counter exceeded
+  generation_counter <- generation_counter + 1
+  
+  if(generation_counter > max_generations){
+    criteria_met <- TRUE
+    cat("Convergence criteria reached: Max number of generations (", max_generations, ") evaluated.\n")
+    break
+  }
+  
+  # Step 2: Evaluate number of duplicates in the population
+  population_serialized <- sapply(current_pop, function(grid) paste(as.vector(grid), collapse = "-"))
+  most_common <- max(table(population_serialized))
+  proportion_duplicates <- most_common / length(current_pop)
+  
+  if(proportion_duplicates >= diversity_threshold){
+    criteria_met <- TRUE
+    cat("Convergence criteria reached: High duplication in population (", round(proportion_duplicates, 2), ").\n")
+    break
+  }
+  
+  # Step 3: Evaluate fitness and improvement
+  pop_fitness <- unlist(lapply(current_pop, total_aesthetic_score))
+  mean_fitness <- mean(pop_fitness)
+  max_fitness <- max(pop_fitness)
+  
+  best_fitness_history <- c(best_fitness_history, max_fitness)
+  mean_fitness_history <- c(mean_fitness_history, mean_fitness)
+  
+  if(length(mean_fitness_history) > 1){  # safer than relying on generation_counter
+    delta <- mean_fitness_history[length(mean_fitness_history)] - 
+             mean_fitness_history[length(mean_fitness_history) - 1]
+    
+    if(delta < improvement_threshold){
+      no_improvement_counter <- no_improvement_counter + 1
+      if(no_improvement_counter >= no_improvement_limit){
+        criteria_met <- TRUE
+        cat("Convergence criteria reached: No significant improvement in last", no_improvement_limit, "generations.\n")
+        break
+      }
+    } else {
+      no_improvement_counter <- 0
+    }
+  }
+  # if none of the convergence criteria is met:
+  ## select parents
+  parents <- select_parents_by_rank(current_pop, pop_fitness)
+  
+  ## apply crossover
+  offspring_crossover <- generate_offspring(parents, pop_fitness)
+  
+  ## apply mutation
+  offspring_mutation <- lapply(offspring_crossover, mutate_grid)
+  
+  ## make the offspring viable
+  final_offspring <- lapply(offspring_mutation, make_viable_solution)
+  
+  ## replace the worst of the current population with the new offspring
+  current_pop <- replace_offspring(current_pop, final_offspring)
+  
+  cat("Completed iteration for generation", generation_counter, "\n")
+}
+
+best_fitness_history
+```
+### Plot the results
+
+```{r}
+# Set y-axis limits to cover both series
+ymin <- min(c(mean_fitness_history, best_fitness_history))
+ymax <- max(c(mean_fitness_history, best_fitness_history)) + 0.1
+
+# Plot the mean fitness first
+plot(1:length(mean_fitness_history), mean_fitness_history, type = "l", col = "blue", lwd = 2,
+     ylim = c(ymin, ymax), xlab = "Generation", ylab = "Fitness",
+     main = "Fitness Over Generations")
+
+# Add best fitness line
+lines(best_fitness_history, col = "darkgreen", lwd = 2)
+
+# Add a legend
+legend("bottomright", legend = c("Mean Fitness", "Best Fitness"),
+       col = c("blue", "darkgreen"), lty = 1, lwd = 2)
+
+best_fitness_history
+```
+
+```{r}
+# results of iterations with different thresholds for conversion:
+ 
+## max generation: 100, no_improvement_limit: 5, improvement_threshold: 0.1
+### max fitness: 
+```
+
