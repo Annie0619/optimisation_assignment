@@ -1,0 +1,7 @@
+"max_generations","no_improvement_limit","improvement_threshold","mean_best_score","mean_mean_score","mean_generations","mean_prop_duplicates","most_common_convergence_reason"
+100,10,0.01,2.89678008294572,2.88713321715968,67.6,0.567,"no_improvement"
+100,10,0.02,2.87245168450114,2.82446064577755,45.4,0.049,"no_improvement"
+100,15,0.01,2.91463105205354,2.90513639595435,72,0.693,"high_duplication"
+100,15,0.02,2.89029453669695,2.86716515992179,57.3,0.116,"no_improvement"
+100,20,0.01,2.900741760958,2.89340806158013,71.4,0.863,"high_duplication"
+100,20,0.02,2.88295918627559,2.86069835925738,58.7,0.192,"no_improvement"
