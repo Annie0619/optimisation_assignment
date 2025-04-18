@@ -19,6 +19,9 @@ rm(list=ls())
 # source all general input functions
 source("garden_utils.R")
 library(readxl)
+library(tibble)
+library(purrr)
+library(furrr)
 ```
 
 # Simulated Annealing
@@ -209,9 +212,9 @@ Note that in this case we are trying to maximise the aesthetic score of the gard
 
 ```{r}
 simulated_annealing <- function(initial_grid,
-  iterations = 1000,
+  iterations = 10000,
   start_temp = 1, # set starting temperature
-  cooling_rate = 0.995 # set cooling rate
+  cooling_rate = 0.9 # set cooling rate
   ) { 
   # Make the initial solution viable
   current_grid <- make_viable_solution(initial_grid)
@@ -265,13 +268,83 @@ simulated_annealing <- function(initial_grid,
 
 # Apply the function
 
+We will apply the SA algorithm for different combinations of iterations, starting temperature and cooling rates.
 ```{r}
-# generate initial solution
-set.seed(1)
-random_initial_grid <- generate_initial_sol(empty_grid)
-final_results <- simulated_annealing(random_initial_grid)
+param_grid <- expand.grid(
+   iterations = c(5000,10000, 15000),
+  start_temp = c(1, 5, 10), # set starting temperature
+  cooling_rate = c(0.85, 0.9, 0.95, 0.99) # set cooling rate
+)
 
-final_results$best_score
-plot(final_results$score_history, type = "l")
+param_grid <- as_tibble(param_grid)
 ```
 
+
+```{r}
+plan(multisession)
+set.seed(1)
+random_initial_grid <- generate_initial_sol(empty_grid)
+
+results <- future_pmap(param_grid, function(iterations, start_temp, cooling_rate) {
+  message(sprintf("Running SA: iter=%d, T0=%.2f, cooling=%.3f", iterations, start_temp, cooling_rate))
+  sa_result <- simulated_annealing(
+    initial_grid = random_initial_grid,
+    iterations = iterations,
+    start_temp = start_temp,
+    cooling_rate = cooling_rate
+  )
+  
+  tibble(
+    iterations = iterations,
+    start_temp = start_temp,
+    cooling_rate = cooling_rate,
+    best_score = sa_result$best_score,
+    final_temp = tail(sa_result$temp_history, 1),
+    final_score = tail(sa_result$score_history, 1),
+    mean_score = mean(sa_result$score_history),
+    sd_score = sd(sa_result$score_history)
+  )
+},
+.progress = TRUE # this will show a progress bar
+)
+
+
+summary_results <- bind_rows(results)
+
+write.csv(summary_results, "results/sa_results_paramgrid1.csv")
+```
+
+
+
+
+
+```{r}
+# cooling rate: 0.9 (2.887), 0.85 and 0.99- all give around 2.8
+```
+
+# final optimal garden
+
+For this, we set the number of iterations to 15 000, T_0 (starting temperature) to 10 and alpha (cooling rate) to 0.99
+
+```{r}
+# generate initial solution
+set.seed(10)
+random_initial_grid <- generate_initial_sol(empty_grid)
+final_results <- simulated_annealing(random_initial_grid,
+  iterations = 15000,
+  start_temp = 10, # set starting temperature
+  cooling_rate = 0.99 # set cooling rate
+  )
+
+# save the score history to csv
+write.csv(final_results$score_history, "results/optimal_sa_score_history.csv")
+# write the garden grid to csv
+write.csv(final_results$best_grid, "results/optimal_garden_grid_sa.csv")
+
+# plot the score history
+pdf("plots/results_optimal_sa.pdf", width = 5, height = 4)
+plot(final_results$score_history, type = "l", xlab = "Iterations", ylab = "Aesthetic Score", main ="Aesthetic Score over Iterations\n using Simulated Annealing")
+dev.off()
+
+length(unique(as.vector(final_results$best_grid))) # 25 unique plants
+```

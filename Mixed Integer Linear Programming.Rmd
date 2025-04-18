@@ -13,25 +13,16 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 rm(list=ls())
-```
 
-```{r}
 library(readxl)
+library(slam)
+library(Rglpk)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
 ```
-
-# Garden by numbers
-
-The aim of the project is to find the optimal cottage garden design. 
-
-Some intro about what a cottage garden is.
-
-Each of the techniques will be applied to solve some aspect of this optimization problem.
-
-Colours are from the RGB model.
 
 # Mixed Integer Linear Programming (MILP)
-
-## Overview
 
 ## Formulation
 \newpage
@@ -60,3 +51,217 @@ $$
 x_{is}\ge0\ \ \ \forall\  i,s
 $$
 where each $x_{is}$ is an integer.
+
+## Implementation
+
+```{r data_prep}
+# read in data
+all_data <- read_xlsx("data/Plant Data for Optimisation (with Impact Scores).xlsx")
+
+# read in optimal grid
+optimal_grid <- as.vector(as.matrix(read.csv("results/optimal_garden_grid_ga.csv")))
+
+# remove "U"
+optimal_grid <- optimal_grid[optimal_grid!="U"]
+
+length(unique(optimal_grid))
+# amount of each plant type in garden
+x_i <- as.data.frame(table(optimal_grid))
+colnames(x_i) <- c("plant_index", "amount")
+
+# now merge all other data needed
+
+final_data <- all_data[as.vector(x_i$plant_index),] # we only need these plants
+final_data$Q_i <- as.vector(x_i$amount) # the quantities needed of each plant
+# add index since it will now change:
+final_data$index <- as.vector(x_i$plant_index)
+
+# remove unnecessary columns:
+remove_cols <- c("Common_Name", "Description",  "Category", 
+                 "Maturity_Height",  "Flower Color" , "Foliage Color",  
+                 "Flower_Colour_1_Hue", "Flower_Colour_2_Hue", 
+                 "Flower_Colour_3_Hue", "January_Flowering", "February_Flowering", 
+                 "March_Flowering", "April_Flowering", "May_Flowering", 
+                 "June_Flowering", "July_Flowering", "August_Flowering",
+                 "September_Flowering", "October_Flowering", "November_Flowering", 
+                 "December_Flowering")
+final_data <- final_data[,-which(colnames(final_data) %in% remove_cols)]
+
+# convert to long format
+milp_df <- final_data %>%
+  pivot_longer(
+    cols = c(Cost_Small, Cost_Medium, Cost_Large,
+             Impact_Small, Impact_Medium, Impact_Large),
+    names_to = c(".value", "size"),
+    names_sep = "_"
+  )
+
+# now each row represents a specific size (small, medium or large) of each plant
+```
+
+## Objective
+
+```{r}
+# specify objective
+obj <- milp_df$Impact
+
+```
+
+## Constraints
+
+The total small, medium and large plants for each plant need to sum to Q_i in total.
+```{r q_i_constraint}
+n_plants <- length(unique(milp_df$index))
+n_vars <- nrow(milp_df)
+
+# invert the col and row dims: now each row is a specific plant
+mat_quantity <- matrix(0, nrow = n_plants, ncol = n_vars)
+
+# for each plant, sum the total of that plant across small, medium and large
+for (i in 1:n_plants) {
+  # which rows are associated with plant i (small, medium and large)
+  rows <- which(milp_df$index == unique(milp_df$index)[i]) 
+  # make these columns 1
+  mat_quantity[i, rows] <- 1
+}
+
+# store the specific total quantities of each plant 
+rhs_quantity <- milp_df$Q_i[match(unique(milp_df$index), milp_df$index)]
+
+# the total Q_i need to sum to n_plants for each plant
+dir_quantity <- rep("==", n_plants) 
+```
+
+The budget constraint.
+
+```{r}
+# what should the budget be?
+summary(milp_df$Cost)
+# the min cost is 25, thus if we only buy plants that cost 25, we need a minimum of 25*73 = R1825
+sum(milp_df$Cost) # to buy one of each size plant we need R4980
+
+# thus a budget of R5000 seems reasonable to get some variation
+```
+
+
+```{r budget_constraint}
+# cost vector for all plants:
+mat_budget <- matrix(milp_df$Cost, nrow = 1)
+rhs_budget <- 5000  # start with this
+dir_budget <- "<=" # need to be within budget
+
+# merge all constraints:
+mat <- rbind(mat_quantity, mat_budget)
+rhs <- c(rhs_quantity, rhs_budget)
+dir <- c(dir_quantity, dir_budget)
+```
+
+## Variable types
+
+```{r var_types}
+# all variables are integers
+types <- rep("I", n_vars)
+bounds <- list(lower = list(ind = 1:n_vars, 
+                            val = rep(0, n_vars) # minimum is 0
+                            ))
+```
+
+## Solve MILP
+
+```{r}
+result <- Rglpk_solve_LP(obj = obj, # objective
+                          mat = mat, # constraint matrix
+                          dir = dir, # direction of constraints
+                          rhs = rhs, # rhs of constraints
+                          bounds = bounds,
+                          types = types,
+                          max = TRUE) # max visual impact
+
+result$solution
+```
+
+## Model validation
+
+Check that the constraints are met:
+
+```{r validation}
+milp_df$solution <- result$solution
+
+# budget constraint
+total_cost <- sum(milp_df$Cost * milp_df$solution)
+total_cost <= rhs_budget  # should be TRUE, which it is
+cat("Total Cost:", total_cost, "\nBudget Limit:", rhs_budget, "\n")
+
+# non-negativity and all integer
+all(milp_df$solution %% 1 == 0) # check all are integers
+all(milp_df$solution >= 0) # check all are non-negative
+
+# plant quantity:
+# group by plant index and sum the chosen quantities
+plant_quantity_check <- milp_df %>%
+  group_by(index) %>%
+  summarise(
+    total_selected = sum(solution),
+    expected = first(Q_i),
+    match = total_selected == expected
+  )
+
+# View mismatches
+plant_quantity_check %>% filter(!match) # no mismatches
+```
+
+## Model Results
+
+```{r key_results}
+# Plant data such as amount of each size, total cost and impact.
+result_summary <- milp_df %>%
+  filter(solution > 0) %>%
+  select(Scientific_Name, size, Cost, Impact, solution) %>%
+  mutate(
+    Total_Cost = Cost * solution,
+    Total_Impact = Impact * solution
+  ) %>%
+  arrange(desc(Total_Impact))
+
+# view it
+print(result_summary)
+
+# write to csv
+write.csv(result_summary, "results/milp_plants.csv")
+
+
+# total impact and cost
+total_cost <- sum(result_summary$Total_Cost)
+total_impact <- sum(result_summary$Total_Impact)
+
+cat("Total cost used:", total_cost, "\n")
+cat("Total visual impact achieved:", total_impact, "\n")
+
+# bar plot of impact by plant size
+p <- ggplot(result_summary, aes(x = reorder(Scientific_Name, -Total_Impact), y = Total_Impact, fill = size)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Total Visual Impact by Plant and Size",
+       x = "Plant",
+       y = "Impact") +
+  coord_flip() +
+  theme_minimal()
+
+# save to pdf
+ggsave("plots/plant_impact_barplot.pdf", plot = p, width = 6, height = 3.5)
+
+# pie chart of size distribution
+p2 <- result_summary %>%
+  group_by(size) %>%
+  summarise(count = sum(solution)) %>%
+  ggplot(aes(x = "", y = count, fill = size)) +
+  geom_col(width = 1) +
+  scale_fill_brewer(palette = "Set2") +
+  coord_polar("y") +
+  labs(title = "Distribution of Selected Plant Sizes") +
+  theme_void()
+
+# save to pdf
+ggsave("plots/plant_size_piechart.pdf", plot = p2, width = 3, height = 3)
+```
+

@@ -1,0 +1,223 @@
+---
+title: "Multi-objective Linear Programming"
+author: "Andomei Smit: SMTAND051"
+date: "25/02/2025"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    fig_caption: true
+    keep_tex: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+
+library(readxl)
+library(slam)
+library(Rglpk)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+```
+
+# Multi-objective Linear Programming
+
+In this script we will be applying two different goal programming algorithms:
+1. Archimedean Goal Programming
+2. Chebychev Goal Programming
+
+# Data Prep
+
+Start by preparing the data. 
+
+```{r}
+# read in data
+all_data <- read_xlsx("data/Plant Data for Optimisation (with Impact Scores).xlsx")
+
+# read in optimal grid
+optimal_grid <- as.vector(as.matrix(read.csv("results/optimal_garden_grid_ga.csv")))
+
+# remove "U"
+optimal_grid <- optimal_grid[optimal_grid!="U"]
+
+length(unique(optimal_grid))
+# amount of each plant type in garden
+x_i <- as.data.frame(table(optimal_grid))
+colnames(x_i) <- c("plant_index", "amount")
+
+# now merge all other data needed
+
+final_data <- all_data[as.vector(x_i$plant_index),] # we only need these plants
+final_data$Q_i <- as.vector(x_i$amount) # the quantities needed of each plant
+# add index since it will now change:
+final_data$index <- as.vector(x_i$plant_index)
+
+# remove unnecessary columns:
+remove_cols <- c("Common_Name", "Description",  "Category", 
+                 "Maturity_Height",  "Flower Color" , "Foliage Color",  
+                 "Flower_Colour_1_Hue", "Flower_Colour_2_Hue", 
+                 "Flower_Colour_3_Hue", "January_Flowering", "February_Flowering", 
+                 "March_Flowering", "April_Flowering", "May_Flowering", 
+                 "June_Flowering", "July_Flowering", "August_Flowering",
+                 "September_Flowering", "October_Flowering", "November_Flowering", 
+                 "December_Flowering")
+final_data <- final_data[,-which(colnames(final_data) %in% remove_cols)]
+
+# convert to long format
+milp_df <- final_data %>%
+  pivot_longer(
+    cols = c(Cost_Small, Cost_Medium, Cost_Large,
+             Impact_Small, Impact_Medium, Impact_Large),
+    names_to = c(".value", "size"),
+    names_sep = "_"
+  )
+# now each row represents a specific size (small, medium or large) of each plant
+```
+Now we will simulate the Maintenance effort for each plant.
+
+```{r sim_maintenance}
+set.seed(42)  # for reproducibility
+
+milp_df$Maintenance_Effort <- case_when(
+  milp_df$size == "Small"  ~ pmax(0, rnorm(nrow(milp_df), mean = 3, sd = 1)),
+  milp_df$size == "Medium" ~ pmax(0, rnorm(nrow(milp_df), mean = 2, sd = 1)),
+  milp_df$size == "Large"  ~ pmax(0, rnorm(nrow(milp_df), mean = 1, sd = 1))
+)
+```
+
+# Pay-off Table
+We begin by calculating the pay-off table.
+
+## Function to solve MILP given an objective
+
+```{r milp_function}
+solve_single_objective <- function(obj_vector, milp_df, 
+                                   rhs_budget = 5000 # set default
+                                   ) {
+  
+  n_plants <- length(unique(milp_df$index))
+  n_vars <- nrow(milp_df)
+
+  # Quantity constraint matrix
+  mat_quantity <- matrix(0, nrow = n_plants, ncol = n_vars)
+
+  # for each plant, sum the total of that plant across small, medium and large
+  for (i in 1:n_plants) {
+  # which rows are associated with plant i (small, medium and large)
+    rows <- which(milp_df$index == unique(milp_df$index)[i]) 
+  # make these columns 1
+    mat_quantity[i, rows] <- 1
+  }
+  
+  # store the specific total quantities of each plant 
+  rhs_quantity <- milp_df$Q_i[match(unique(milp_df$index), milp_df$index)]
+  # the total Q_i need to sum to n_plants for each plant
+  dir_quantity <- rep("==", n_plants)
+
+  # Budget constraint
+  mat_budget <- matrix(milp_df$Cost, nrow = 1)
+  rhs_budget <- rhs_budget
+  dir_budget <- "<=" # need to be within budget
+
+  # Combine constraints
+  mat <- rbind(mat_quantity, mat_budget)
+  rhs <- c(rhs_quantity, rhs_budget)
+  dir <- c(dir_quantity, dir_budget)
+
+  # Solve
+  result <- Rglpk_solve_LP(
+    obj = obj_vector,
+    mat = mat,
+    dir = dir,
+    rhs = rhs,
+    types = rep("I", n_vars),
+    bounds = list(lower = list(ind = 1:n_vars, val = rep(0, n_vars))),
+    max = TRUE  # default; flip for cost/effort below
+  )
+
+  return(result)
+}
+
+```
+
+Apply to each objective:
+
+```{r different_objectives}
+# 1. Maximize Impact
+impact_result <- solve_single_objective(obj_vector = milp_df$Impact, milp_df = milp_df)
+
+# 2. Minimize Cost
+cost_result <- solve_single_objective(obj_vector = -milp_df$Cost, milp_df = milp_df)  # negate to minimize
+
+# 3. Minimize Maintenance Effort
+effort_result <- solve_single_objective(obj_vector = -milp_df$Maintenance_Effort, milp_df = milp_df)  # negate to minimize
+```
+
+Combine the results in a table.
+
+```{r pay_off_results}
+# function to calculate the total once multiplied by optimal solution
+evaluate_solution <- function(solution, milp_df) {
+  list(
+    Cost   = sum(milp_df$Cost * solution),
+    Impact = sum(milp_df$Impact * solution),
+    Effort = sum(milp_df$Maintenance_Effort * solution)
+  )
+}
+
+payoff_table <- rbind(
+  Impact_Optimized = evaluate_solution(impact_result$solution, milp_df),
+  Cost_Optimized   = evaluate_solution(cost_result$solution, milp_df),
+  Effort_Optimized = evaluate_solution(effort_result$solution, milp_df)
+)
+
+# view as data frame
+payoff_df <- as.data.frame(payoff_table)
+```
+
+## Calculate normalized deviations
+
+Extract the best and worst values for each objective.
+
+```{r min_max_values}
+best_cost   <- min(unlist(payoff_df$Cost))
+worst_cost  <- max(unlist(payoff_df$Cost))
+
+best_impact <- max(unlist(payoff_df$Impact))   # because we want to maximize it
+worst_impact <- min(unlist(payoff_df$Impact))
+
+best_effort <- min(unlist(payoff_df$Effort))
+worst_effort <- max(unlist(payoff_df$Effort))
+```
+
+Define functions that will do the normalizations. They will return values between 0 and 1.
+
+```{r norm_formulas}
+# Cost and effort are minimized
+norm_cost   <- function(x) (x - best_cost) / (worst_cost - best_cost)
+norm_effort <- function(x) (x - best_effort) / (worst_effort - best_effort)
+
+# Impact is maximized — reverse the scale
+norm_impact <- function(x) 1 - (x - worst_impact) / (best_impact - worst_impact)
+```
+
+
+# Archimedean Goal Programming
+
+## Define weights for each objective
+
+```{r archi_weights}
+# start with equal weights
+weights <- c(cost = 1, impact = 1, effort = 1)
+```
+
+## Create function to evaluate cost, impact and effort
+
+```{r calc_functions}
+
+```
+
+
+

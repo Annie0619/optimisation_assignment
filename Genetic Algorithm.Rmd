@@ -14,6 +14,9 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 rm(list=ls())
 library(readxl)
+library(future)
+library(furrr)
+library(purrr)
 ```
 
 # Import required functions and data
@@ -305,8 +308,6 @@ We will now write a sequence of functions that will repeat until convergence. Co
 2. No improvement greater than a small epsilon (0.1) for at least 5 generations OR
 3. The population has more than 90% duplicate individuals
 
-Tried values for improvement_threshold: 0.1, 0.05 (converged at 35 generations), 0.02 (converged at 47 generations with a max fitness of 2.96).
-
 ```{r convergence_criteria}
 max_generations <- 100
 no_improvement_limit <- 5
@@ -414,6 +415,281 @@ best_fitness_history
 # results of iterations with different thresholds for conversion:
  
 ## max generation: 100, no_improvement_limit: 5, improvement_threshold: 0.1
-### max fitness: 
+### max fitness: 2.39, 2.17
+### converged after: 15, 12
 ```
 
+## Parameter tuning
+
+Wrap the whole while loop in a function.
+```{r}
+run_ga <- function(max_generations = 100,
+                   no_improvement_limit = 10,
+                   improvement_threshold = 0.1,
+                   diversity_threshold = 0.9,
+                   pop_size = 100) {
+  
+  best_fitness_history <- c()
+  mean_fitness_history <- c()
+  generation_counter <- 0
+  no_improvement_counter <- 0
+  criteria_met <- FALSE
+  convergence_reason <- NA
+  proportion_duplicates <- NA
+  
+  current_pop <- generate_population(pop_size, empty_grid)
+  
+  while (!criteria_met) {
+    generation_counter <- generation_counter + 1
+    
+    # Criterion 1: Max generations
+    if (generation_counter > max_generations) {
+      convergence_reason <- "max_generations"
+      break
+    }
+    
+    # Criterion 2: Diversity threshold
+    population_serialized <- sapply(current_pop, function(grid) paste(as.vector(grid), collapse = "-"))
+    proportion_duplicates <- max(table(population_serialized)) / length(current_pop)
+    
+    if (proportion_duplicates >= diversity_threshold) {
+      convergence_reason <- "high_duplication"
+      break
+    }
+    
+    # Evaluate fitness
+    pop_fitness <- unlist(lapply(current_pop, total_aesthetic_score))
+    mean_fitness <- mean(pop_fitness)
+    max_fitness <- max(pop_fitness)
+    
+    best_fitness_history <- c(best_fitness_history, max_fitness)
+    mean_fitness_history <- c(mean_fitness_history, mean_fitness)
+    
+    # Criterion 3: No improvement
+    if (length(mean_fitness_history) > 1) {
+      delta <- mean_fitness_history[length(mean_fitness_history)] - 
+               mean_fitness_history[length(mean_fitness_history) - 1]
+      if (delta < improvement_threshold) {
+        no_improvement_counter <- no_improvement_counter + 1
+        if (no_improvement_counter >= no_improvement_limit) {
+          convergence_reason <- "no_improvement"
+          break
+        }
+      } else {
+        no_improvement_counter <- 0
+      }
+    }
+    
+    # Evolve population
+    parents <- select_parents_by_rank(current_pop, pop_fitness)
+    offspring <- lapply(generate_offspring(parents, pop_fitness), mutate_grid)
+    final_offspring <- lapply(offspring, make_viable_solution)
+    current_pop <- replace_offspring(current_pop, final_offspring)
+  }
+  
+  # Final evaluation
+  final_fitness <- unlist(lapply(current_pop, total_aesthetic_score))
+  best_score <- max(final_fitness)
+  mean_score <- mean(final_fitness)
+  
+  return(list(
+    best_score = best_score,
+    mean_score = mean_score,
+    generations = generation_counter,
+    convergence_reason = convergence_reason,
+    prop_duplicates = proportion_duplicates
+  ))
+}
+```
+
+Apply this function over a grid of parameter values, each repeated 10 times.
+
+```{r}
+param_grid <- expand.grid(
+  max_generations = c(50, 100),
+  no_improvement_limit = c(5, 10),
+  improvement_threshold = c(0.05, 0.1),
+  diversity_threshold = c(0.85, 0.90)
+)
+
+param_grid2 <- expand.grid(
+  max_generations = c(100),
+  no_improvement_limit = c(10, 15, 20),
+  improvement_threshold = c(0.02, 0.01)
+)
+```
+
+```{r}
+plan(multisession) 
+# Run 10 GA runs for each parameter combination
+results_list <- future_pmap(param_grid2, function(max_generations,
+                                          no_improvement_limit,
+                                          improvement_threshold)
+                                          #,diversity_threshold) 
+                                          {
+  
+  # Run GA 10 times
+  runs <- future_map(1:10, ~ run_ga(
+    max_generations = max_generations,
+    no_improvement_limit = no_improvement_limit,
+    improvement_threshold = improvement_threshold
+    #diversity_threshold = diversity_threshold
+  ))
+  
+  # Extract values from each run
+  tibble::tibble(
+    max_generations = max_generations,
+    no_improvement_limit = no_improvement_limit,
+    improvement_threshold = improvement_threshold,
+    #diversity_threshold = diversity_threshold,
+    run = 1:10,
+    best_score = map_dbl(runs, "best_score"),
+    mean_score = map_dbl(runs, "mean_score"),
+    generations = map_dbl(runs, "generations"),
+    convergence_reason = map_chr(runs, "convergence_reason"),
+    prop_duplicates = map_dbl(runs, "prop_duplicates")
+  )
+})
+
+all_results <- dplyr::bind_rows(results_list)
+```
+
+Average the results:
+
+```{r}
+library(dplyr)
+
+summary_results <- all_results %>%
+  group_by(max_generations, no_improvement_limit, improvement_threshold) %>%
+  summarise(
+    mean_best_score = mean(best_score),
+    mean_mean_score = mean(mean_score),
+    mean_generations = mean(generations),
+    mean_prop_duplicates = mean(prop_duplicates),
+    most_common_convergence_reason = names(sort(table(convergence_reason), decreasing = TRUE))[1],
+    .groups = "drop"
+  )
+
+write.csv(summary_results, "summary_results_2.csv", row.names = FALSE)
+
+```
+
+# best garden
+
+Setting n=10, epsilon = 0.02 and solving again, we find the following optimal garden design.
+
+```{r optimal_final_garden}
+set.seed(1)
+max_generations <- 100
+no_improvement_limit <- 10
+improvement_threshold <- 0.02
+diversity_threshold <- 0.90  # e.g. 90% of individuals are identical
+
+best_fitness_history <- c()
+mean_fitness_history <- c()
+generation_counter <- 0
+no_improvement_counter <- 0
+criteria_met <- FALSE
+
+# initialise a population of solutions
+current_pop <- generate_population(100, empty_grid)
+
+while(!criteria_met){ 
+  
+  # Step 1: check if generation counter exceeded
+  generation_counter <- generation_counter + 1
+  
+  if(generation_counter > max_generations){
+    criteria_met <- TRUE
+    cat("Convergence criteria reached: Max number of generations (", max_generations, ") evaluated.\n")
+    break
+  }
+  
+  # Step 2: Evaluate number of duplicates in the population
+  population_serialized <- sapply(current_pop, function(grid) paste(as.vector(grid), collapse = "-"))
+  most_common <- max(table(population_serialized))
+  proportion_duplicates <- most_common / length(current_pop)
+  
+  if(proportion_duplicates >= diversity_threshold){
+    criteria_met <- TRUE
+    cat("Convergence criteria reached: High duplication in population (", round(proportion_duplicates, 2), ").\n")
+    break
+  }
+  
+  # Step 3: Evaluate fitness and improvement
+  pop_fitness <- unlist(lapply(current_pop, total_aesthetic_score))
+  mean_fitness <- mean(pop_fitness)
+  max_fitness <- max(pop_fitness)
+  
+  best_fitness_history <- c(best_fitness_history, max_fitness)
+  mean_fitness_history <- c(mean_fitness_history, mean_fitness)
+  
+  if(length(mean_fitness_history) > 1){  # safer than relying on generation_counter
+    delta <- mean_fitness_history[length(mean_fitness_history)] - 
+             mean_fitness_history[length(mean_fitness_history) - 1]
+    
+    if(delta < improvement_threshold){
+      no_improvement_counter <- no_improvement_counter + 1
+      if(no_improvement_counter >= no_improvement_limit){
+        criteria_met <- TRUE
+        cat("Convergence criteria reached: No significant improvement in last", no_improvement_limit, "generations.\n")
+        break
+      }
+    } else {
+      no_improvement_counter <- 0
+    }
+  }
+  # if none of the convergence criteria is met:
+  ## select parents
+  parents <- select_parents_by_rank(current_pop, pop_fitness)
+  
+  ## apply crossover
+  offspring_crossover <- generate_offspring(parents, pop_fitness)
+  
+  ## apply mutation
+  offspring_mutation <- lapply(offspring_crossover, mutate_grid)
+  
+  ## make the offspring viable
+  final_offspring <- lapply(offspring_mutation, make_viable_solution)
+  
+  ## replace the worst of the current population with the new offspring
+  current_pop <- replace_offspring(current_pop, final_offspring)
+  
+  cat("Completed iteration for generation", generation_counter, "\n")
+}
+```
+### Plot the results
+
+```{r}
+# Set y-axis limits to cover both series
+ymin <- min(c(mean_fitness_history, best_fitness_history))
+ymax <- max(c(mean_fitness_history, best_fitness_history)) + 0.1
+
+# Plot the mean fitness first
+pdf("plots/results_optimal_ga.pdf", width = 5, height = 4)
+plot(1:length(mean_fitness_history), mean_fitness_history, type = "l", col = "blue", lwd = 2,
+     ylim = c(ymin, ymax), xlab = "Generation", ylab = "Fitness",
+     main = "Fitness Over Generations\n using Genetic Algorithm ")
+
+# Add best fitness line
+lines(best_fitness_history, col = "darkgreen", lwd = 2)
+
+# Add a legend
+legend("bottomright", legend = c("Mean Fitness", "Best Fitness"),
+       col = c("blue", "darkgreen"), lty = 1, lwd = 2)
+
+dev.off()
+
+# max fitness score:
+max_fitness
+
+# actual optimal grid with the score of 2.84:
+index_final_max <- which.max(lapply(current_pop, total_aesthetic_score))
+current_pop[index_final_max] # the optimal garden
+## confirming its score:
+lapply(current_pop, total_aesthetic_score)[index_final_max]
+
+# write the final garden grid to csv:
+# write the garden grid to csv
+write.csv(current_pop[index_final_max], "results/optimal_garden_grid_ga.csv")
+```
