@@ -206,18 +206,290 @@ norm_impact <- function(x) 1 - (x - worst_impact) / (best_impact - worst_impact)
 
 # Archimedean Goal Programming
 
-## Define weights for each objective
-
-```{r archi_weights}
-# start with equal weights
-weights <- c(cost = 1, impact = 1, effort = 1)
-```
-
 ## Create function to evaluate cost, impact and effort
 
 ```{r calc_functions}
+evaluate_objectives <- function(solution, milp_df) {
+  cost   <- sum(milp_df$Cost * solution)
+  impact <- sum(milp_df$Impact * solution)
+  effort <- sum(milp_df$Maintenance_Effort * solution)
+  return(list(cost = cost, impact = impact, effort = effort))
+}
 
+# combine objective evaluation and normed deviations in one function:
+archimedean_objective <- function(solution, milp_df, weights) {
+  obj_vals <- evaluate_objectives(solution, milp_df)
+  
+  d_cost <- norm_cost(obj_vals$cost)
+  d_impact <- norm_impact(obj_vals$impact)
+  d_effort <- norm_effort(obj_vals$effort)
+  
+  # Weighted sum of normalized deviations
+  return(weights["cost"] * d_cost + weights["impact"] * d_impact + weights["effort"] * d_effort)
+}
 ```
 
+## Optimize usign Archimedean
 
+```{r}
+solve_archimedean_milp <- function(milp_df, weights, payoff_df, rhs_budget = 5000) {
+  library(Rglpk)
+  
+  # Extract bounds for normalization
+  best_cost    <- min(unlist(payoff_df$Cost))
+  worst_cost   <- max(unlist(payoff_df$Cost))
+  best_impact  <- max(unlist(payoff_df$Impact))  # swopped for impact: want to max impact
+  worst_impact <- min(unlist(payoff_df$Impact))  # swopped for impact: want to max impact
+  best_effort  <- min(unlist(payoff_df$Effort))
+  worst_effort <- max(unlist(payoff_df$Effort))
+
+  # Compute the coefficients of the linearized normalized deviations
+  # Normalized deviation becomes: d = a * sum(x * data) + b
+  # This works because sum(x * Cost) = total cost, etc.
+  a_cost   <- weights["cost"]   / (worst_cost - best_cost)
+  b_cost   <- -weights["cost"] * best_cost / (worst_cost - best_cost)
+
+  a_impact <- -weights["impact"] / (best_impact - worst_impact)  # flipped for max objective
+  b_impact <- weights["impact"] * worst_impact / (best_impact - worst_impact) + weights["impact"]
+
+  a_effort <- weights["effort"] / (worst_effort - best_effort)
+  b_effort <- -weights["effort"] * best_effort / (worst_effort - best_effort)
+
+  # Final objective vector
+  obj <- a_cost * milp_df$Cost +
+         a_impact * milp_df$Impact +
+         a_effort * milp_df$Maintenance_Effort
+
+  obj <- as.numeric(obj)  # just in case
+
+  # Constraints (same as before)
+  n_plants <- length(unique(milp_df$index))
+  n_vars <- nrow(milp_df)
+
+  mat_quantity <- matrix(0, nrow = n_plants, ncol = n_vars)
+  for (i in 1:n_plants) {
+    rows <- which(milp_df$index == unique(milp_df$index)[i])
+    mat_quantity[i, rows] <- 1
+  }
+
+  rhs_quantity <- milp_df$Q_i[match(unique(milp_df$index), milp_df$index)]
+  dir_quantity <- rep("==", n_plants)
+
+  # Budget constraint
+  mat_budget <- matrix(milp_df$Cost, nrow = 1)
+  rhs_budget <- rhs_budget
+  dir_budget <- "<="
+
+  # Combine all constraints
+  mat <- rbind(mat_quantity, mat_budget)
+  rhs <- c(rhs_quantity, rhs_budget)
+  dir <- c(dir_quantity, dir_budget)
+
+  # Solve
+  result <- Rglpk_solve_LP(
+    obj = obj,
+    mat = mat,
+    dir = dir,
+    rhs = rhs,
+    types = rep("I", n_vars),
+    bounds = list(lower = list(ind = 1:n_vars, val = rep(0, n_vars))),
+    max = FALSE  # we are minimizing the weighted deviation
+  )
+
+  # Evaluate objectives for solution
+  milp_df$solution <- result$solution
+  final <- list(
+    result = result,
+    selected = milp_df %>% filter(solution > 0),
+    objectives = list(
+      Cost   = sum(milp_df$Cost * milp_df$solution),
+      Impact = sum(milp_df$Impact * milp_df$solution),
+      Effort = sum(milp_df$Maintenance_Effort * milp_df$solution)
+    ),
+    weighted_deviation = sum(obj * result$solution) + b_cost + b_impact + b_effort
+  )
+
+  return(final)
+}
+```
+
+Apply the function over 3 different weights:
+1. All goals priorities equally
+2. Cost prioritised
+3. Impact prioritised
+4. Effort prioritised
+
+```{r apply_archi_1}
+weight_list <- list(
+  Equal    = c(cost = 1, impact = 1, effort = 1),
+  Cost     = c(cost = 3, impact = 1, effort = 1), 
+  Impact   = c(cost = 1, impact = 3, effort = 1),
+  Effort   = c(cost = 1, impact = 1, effort = 3)
+)
+
+
+arch_results <- lapply(names(weight_list), function(name) { # apply archi to all weights
+  res <- solve_archimedean_milp(milp_df, weights = weight_list[[name]], payoff_df, rhs_budget = 5000)
+  
+  # Size distribution
+  size_dist <- res$selected %>%
+    group_by(size) %>% # look at size distribution for the results
+    summarise(count = sum(solution)) %>% 
+    tidyr::pivot_wider(names_from = size, values_from = count, values_fill = 0)
+  
+  # save the cost, impact and effort for each result
+  tibble(
+    Formulation = name,
+    Cost = round(res$objectives$Cost, 2),
+    Impact = round(res$objectives$Impact, 2),
+    Effort = round(res$objectives$Effort, 2)
+  ) %>%
+    bind_cols(size_dist)
+})
+
+summary_table <- bind_rows(arch_results)
+print(summary_table)
+```
+
+# Chebychev Goal Programming
+
+Much of the same logic and code follows from the Archimedean goal programming. The objective now changes slighty and there are a few extra constraints.
+
+## Define the optimisation function
+
+```{r cheby_func}
+solve_chebyshev_milp <- function(milp_df, weights, payoff_df, rhs_budget = 5000) {
+  library(Rglpk)
+
+  # extract bounds
+  best_cost    <- min(unlist(payoff_df$Cost))
+  worst_cost   <- max(unlist(payoff_df$Cost))
+  best_impact  <- max(unlist(payoff_df$Impact))
+  worst_impact <- min(unlist(payoff_df$Impact))
+  best_effort  <- min(unlist(payoff_df$Effort))
+  worst_effort <- max(unlist(payoff_df$Effort))
+
+  # Normalization slopes (a) for deviations
+  a_cost   <- 1 / (worst_cost - best_cost)
+  a_impact <- -1 / (best_impact - worst_impact)
+  a_effort <- 1 / (worst_effort - best_effort)
+
+  # Linear coefficients for weighted deviations
+  ## each row is a specifc size of a specific plant
+  obj_cost   <- weights["cost"]   * a_cost   * milp_df$Cost
+  obj_impact <- weights["impact"] * a_impact * milp_df$Impact
+  obj_effort <- weights["effort"] * a_effort * milp_df$Maintenance_Effort
+
+  # Combined deviation constraints matrix
+  ## make these row vectors
+  mat_d1 <- matrix(obj_cost, nrow = 1) # cost*a*w row
+  mat_d2 <- matrix(obj_impact, nrow = 1) # impact*a*w row
+  mat_d3 <- matrix(obj_effort, nrow = 1) # effort*a*w row
+
+  # Add z (the max deviation variable)
+  n_vars <- nrow(milp_df)
+  n_plants <- length(unique(milp_df$index))
+  z_col <- matrix(-1, nrow = 3, ncol = 1)  # subtract z in all 3 constraints
+
+  deviation_constraints <- cbind(rbind(mat_d1, mat_d2, mat_d3) # 3 x n_plants matrix
+                                 , z_col # 3 x 1 matrix
+                                 ) # overall: 3 x (n_plants +1) matrix
+  deviation_dirs <- rep("<=", 3) # these will be set <=0
+
+  # Quantity constraints (same as above)
+  mat_quantity <- matrix(0, nrow = n_plants, ncol = n_vars)
+  for (i in 1:n_plants) {
+    rows <- which(milp_df$index == unique(milp_df$index)[i])
+    mat_quantity[i, rows] <- 1
+  }
+   # same as above
+  rhs_quantity <- milp_df$Q_i[match(unique(milp_df$index), milp_df$index)]
+  dir_quantity <- rep("==", n_plants)
+
+  # Budget constraint
+  mat_budget <- matrix(milp_df$Cost, nrow = 1)
+  dir_budget <- "<="
+
+  # Combine full constraint matrix
+  mat <- rbind(
+    cbind(mat_quantity, matrix(0, nrow = nrow(mat_quantity), ncol = 1)),
+    cbind(mat_budget, 0),
+    deviation_constraints
+  )
+  dir <- c(dir_quantity, dir_budget, deviation_dirs)
+  rhs <- c(rhs_quantity, rhs_budget, 
+           rep(0, 3) # for the deviations, thus w_k*d_k - z <= 0
+           )
+
+  # Objective: minimize z (last variable)
+  obj <- c(rep(0, n_vars), 1)
+
+  # Variable types: all plant decisions are integers, z is continuous
+  types <- c(rep("I", n_vars), "C")
+
+  # Bounds: all variables >= 0
+  bounds <- list(lower = list(ind = 1:(n_vars + 1), val = rep(0, n_vars + 1)))
+
+  # Solve
+  result <- Rglpk_solve_LP(
+    obj = obj,
+    mat = mat,
+    dir = dir,
+    rhs = rhs,
+    bounds = bounds,
+    types = types,
+    max = FALSE
+  )
+
+  # Evaluate and return (same as above: return cost, impact and effort)
+  milp_df$solution <- result$solution[1:n_vars]
+  final <- list(
+    result = result,
+    selected = milp_df %>% filter(solution > 0),
+    objectives = list(
+      Cost   = sum(milp_df$Cost * milp_df$solution),
+      Impact = sum(milp_df$Impact * milp_df$solution),
+      Effort = sum(milp_df$Maintenance_Effort * milp_df$solution)
+    ),
+    z_value = result$solution[n_vars + 1]
+  )
+
+  return(final)
+}
+```
+
+## Apply it for different priorities
+
+```{r cheby_apply}
+# same weights as before
+weight_list <- list(
+  Equal    = c(cost = 1, impact = 1, effort = 1),
+  Cost     = c(cost = 3, impact = 1, effort = 1),
+  Impact   = c(cost = 1, impact = 3, effort = 1),
+  Effort   = c(cost = 1, impact = 1, effort = 3)
+)
+
+# now loop over each weight set
+cheby_results <- lapply(names(weight_list), function(name) {
+  res <- solve_chebyshev_milp(milp_df, weights = weight_list[[name]], payoff_df, rhs_budget = 5000)
+  
+  # Size distribution
+  size_dist <- res$selected %>%
+    group_by(size) %>%
+    summarise(count = sum(solution)) %>%
+    tidyr::pivot_wider(names_from = size, values_from = count, values_fill = 0)
+  
+  tibble::tibble(
+    Formulation = name,
+    Cost = round(res$objectives$Cost, 2),
+    Impact = round(res$objectives$Impact, 2),
+    Effort = round(res$objectives$Effort, 2),
+    Max_Deviation = round(res$z_value, 4)
+  ) %>%
+    bind_cols(size_dist)
+})
+
+cheby_summary_table <- bind_rows(cheby_results)
+print(cheby_summary_table)
+```
 
