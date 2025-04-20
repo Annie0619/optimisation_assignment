@@ -1,3 +1,20 @@
+# Garden by Numbers – Designing the Optimal Garden
+
+This project applies a variety of optimisation algorithms to design a garden that is optimal in terms of aesthetics. It also helps determine which plant sizes to purchase in order to maximise immediate visual impact, stay within a specified budget, and minimise ongoing maintenance effort.
+
+## Purpose
+
+This project was created as part of a master's-level optimisation course. It combines simulation, heuristics, and linear programming to solve real-world inspired aesthetic and budget-constrained garden layout problems.
+
+## Technologies & Packages Used
+
+- **Language**: R, LaTeX
+- **R Packages**:  
+  `dplyr`, `tidyr`, `ggplot2`, `rglpk`, `slam`, `tibble`, `purrr`, `furrr`
+
+## Project Structure
+
+├── data/ # Plant data (CSV) ├── images/ # Reference images used in the report ├── plots/ # Generated plots from the Rmd files ├── results/ # CSV outputs from the various models ├── Garden_utils.R # Helper functions used by SA and GA algorithms ├── Simulated Annealing.Rmd ├── Genetic Algorithm.Rmd ├── Mixed Integer Linear Programming.Rmd ├── Multi-objective Linear Programming.Rmd ├── Optimisation Assignment Final Report.pdf ├── README.md
 
 ## How to Run the Project
 
