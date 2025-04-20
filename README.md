@@ -16,14 +16,14 @@ This project was created as part of a master's-level optimisation course. It com
 
 | Path                                   | Description                                                   |
 |----------------------------------------|---------------------------------------------------------------|
-| `data/`                                | Input plant dataset (CSV format)                              |
+| `data/`                                | Input plant dataset (Excel format)                              |
 | `images/`                              | Images used for illustration in the report                    |
 | `plots/`                               | Generated plots and visual outputs                            |
 | `results/`                             | CSV result files from algorithm runs                          |
 | `Garden_utils.R`                       | Core functions used by the SA and GA models                   |
 | `Simulated Annealing.Rmd`             | Simulated Annealing optimisation notebook                     |
 | `Genetic Algorithm.Rmd`               | Genetic Algorithm optimisation notebook                       |
-| `Mixed Integer Linear Programming.Rmd`| MILP model for mature plant selection                         |
+| `Mixed Integer Linear Programming.Rmd`| MILP model for mature plant selection with maximal visual impact                        |
 | `Multi-objective Linear Programming.Rmd` | Multi-objective LP using Archimedean and Chebychev methods |
 | `Optimisation Assignment Final Report.pdf` | Full final written report                                |
 | `README.md`                            | Project overview and documentation                            |
