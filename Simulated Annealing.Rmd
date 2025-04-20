@@ -209,6 +209,7 @@ The starting temperature is a measure of how likely the algorithm is to choose a
 Note that in this case we are trying to maximise the aesthetic score of the garden.
 
 ## Iterate the process
+This function defines a function that can be applied over a whole parameter grid. If the reader wants to see the function run for one set of parameter combinations, refer to the final section here that only solves the SA algorithm for the final optimal garden.
 
 ```{r}
 simulated_annealing <- function(initial_grid,
@@ -266,10 +267,13 @@ simulated_annealing <- function(initial_grid,
 }
 ```
 
-# Apply the function
-
+## Parameter Tuning
 We will apply the SA algorithm for different combinations of iterations, starting temperature and cooling rates.
-```{r}
+
+### Define parameter grid
+
+```{r param_grid}
+# define the parameter grid
 param_grid <- expand.grid(
    iterations = c(5000,10000, 15000),
   start_temp = c(1, 5, 10), # set starting temperature
@@ -279,12 +283,17 @@ param_grid <- expand.grid(
 param_grid <- as_tibble(param_grid)
 ```
 
+### Apply the function to a parameter grid
 
-```{r}
+Warning: this code takes very long to run, even though it is using parallel computing and running over multiple cores.
+
+```{r apply_param_grid}
 plan(multisession)
 set.seed(1)
+# generate initial solution
 random_initial_grid <- generate_initial_sol(empty_grid)
 
+# apply paralell computing using the same functions as above
 results <- future_pmap(param_grid, function(iterations, start_temp, cooling_rate) {
   message(sprintf("Running SA: iter=%d, T0=%.2f, cooling=%.3f", iterations, start_temp, cooling_rate))
   sa_result <- simulated_annealing(
@@ -293,7 +302,7 @@ results <- future_pmap(param_grid, function(iterations, start_temp, cooling_rate
     start_temp = start_temp,
     cooling_rate = cooling_rate
   )
-  
+  # this stores the results:
   tibble(
     iterations = iterations,
     start_temp = start_temp,
@@ -308,21 +317,14 @@ results <- future_pmap(param_grid, function(iterations, start_temp, cooling_rate
 .progress = TRUE # this will show a progress bar
 )
 
-
+# extract the results in a better format
 summary_results <- bind_rows(results)
 
+# store these results in a csv file
 write.csv(summary_results, "results/sa_results_paramgrid1.csv")
 ```
 
-
-
-
-
-```{r}
-# cooling rate: 0.9 (2.887), 0.85 and 0.99- all give around 2.8
-```
-
-# final optimal garden
+## Final best garden design
 
 For this, we set the number of iterations to 15 000, T_0 (starting temperature) to 10 and alpha (cooling rate) to 0.99
 

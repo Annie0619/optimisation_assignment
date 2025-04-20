@@ -75,6 +75,7 @@ milp_df <- final_data %>%
   )
 # now each row represents a specific size (small, medium or large) of each plant
 ```
+
 Now we will simulate the Maintenance effort for each plant.
 
 ```{r sim_maintenance}
@@ -203,16 +204,15 @@ norm_effort <- function(x) (x - best_effort) / (worst_effort - best_effort)
 norm_impact <- function(x) 1 - (x - worst_impact) / (best_impact - worst_impact)
 ```
 
-
 # Archimedean Goal Programming
 
 ## Create function to evaluate cost, impact and effort
 
 ```{r calc_functions}
 evaluate_objectives <- function(solution, milp_df) {
-  cost   <- sum(milp_df$Cost * solution)
-  impact <- sum(milp_df$Impact * solution)
-  effort <- sum(milp_df$Maintenance_Effort * solution)
+  cost   <- sum(milp_df$Cost * solution) # sum(c_is*x_is)
+  impact <- sum(milp_df$Impact * solution) # sum(I_is*x_is)
+  effort <- sum(milp_df$Maintenance_Effort * solution) # sum(E_is*x_is)
   return(list(cost = cost, impact = impact, effort = effort))
 }
 
@@ -266,12 +266,14 @@ solve_archimedean_milp <- function(milp_df, weights, payoff_df, rhs_budget = 500
   n_plants <- length(unique(milp_df$index))
   n_vars <- nrow(milp_df)
 
+  # again the same matrix as before
   mat_quantity <- matrix(0, nrow = n_plants, ncol = n_vars)
   for (i in 1:n_plants) {
     rows <- which(milp_df$index == unique(milp_df$index)[i])
     mat_quantity[i, rows] <- 1
   }
-
+  
+  # again the same as above
   rhs_quantity <- milp_df$Q_i[match(unique(milp_df$index), milp_df$index)]
   dir_quantity <- rep("==", n_plants)
 
@@ -298,6 +300,7 @@ solve_archimedean_milp <- function(milp_df, weights, payoff_df, rhs_budget = 500
 
   # Evaluate objectives for solution
   milp_df$solution <- result$solution
+  # combine all the results:
   final <- list(
     result = result,
     selected = milp_df %>% filter(solution > 0),
@@ -326,7 +329,6 @@ weight_list <- list(
   Impact   = c(cost = 1, impact = 3, effort = 1),
   Effort   = c(cost = 1, impact = 1, effort = 3)
 )
-
 
 arch_results <- lapply(names(weight_list), function(name) { # apply archi to all weights
   res <- solve_archimedean_milp(milp_df, weights = weight_list[[name]], payoff_df, rhs_budget = 5000)

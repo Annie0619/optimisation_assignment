@@ -99,7 +99,7 @@ milp_df <- final_data %>%
 # now each row represents a specific size (small, medium or large) of each plant
 ```
 
-## Objective
+## Define an Objective
 
 ```{r}
 # specify objective
@@ -107,9 +107,10 @@ obj <- milp_df$Impact
 
 ```
 
-## Constraints
+## Set Constraints
 
 The total small, medium and large plants for each plant need to sum to Q_i in total.
+
 ```{r q_i_constraint}
 n_plants <- length(unique(milp_df$index))
 n_vars <- nrow(milp_df)
@@ -132,7 +133,7 @@ rhs_quantity <- milp_df$Q_i[match(unique(milp_df$index), milp_df$index)]
 dir_quantity <- rep("==", n_plants) 
 ```
 
-The budget constraint.
+Add the budget constraint.
 
 ```{r}
 # what should the budget be?
@@ -156,7 +157,7 @@ rhs <- c(rhs_quantity, rhs_budget)
 dir <- c(dir_quantity, dir_budget)
 ```
 
-## Variable types
+## Set variable types
 
 ```{r var_types}
 # all variables are integers
@@ -166,7 +167,7 @@ bounds <- list(lower = list(ind = 1:n_vars,
                             ))
 ```
 
-## Solve MILP
+## Solve the MILP algorithm
 
 ```{r}
 result <- Rglpk_solve_LP(obj = obj, # objective
@@ -176,8 +177,6 @@ result <- Rglpk_solve_LP(obj = obj, # objective
                           bounds = bounds,
                           types = types,
                           max = TRUE) # max visual impact
-
-result$solution
 ```
 
 ## Model validation
